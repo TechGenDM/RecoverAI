@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import engine, get_db
+from app.routers.webhooks import router as webhooks_router
 
 
 @asynccontextmanager
@@ -22,6 +23,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Mount webhooks router with v1 prefix and root alias
+app.include_router(webhooks_router, prefix="/v1/webhooks")
+app.include_router(webhooks_router, prefix="/webhooks")
 
 
 @app.get("/health")
