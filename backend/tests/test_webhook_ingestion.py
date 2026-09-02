@@ -38,7 +38,7 @@ def generate_payment_failed_payload(
     currency: str = "INR",
     customer_id: str | None = "cust_test_123",
     email: str = "customer@example.com",
-    contact: str = "+919876543210",
+    contact: str | None = "+919876543210",
     error_code: str = "BAD_REQUEST_ERROR",
     error_reason: str = "insufficient_funds",
     created_at: int = 1710000000,
@@ -259,6 +259,60 @@ async def test_different_event_ids_same_payment_id(async_client):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_different_events_same_payment(async_client):
+    """Concurrent deliveries of different events with the same payment_id must be safely resolved.
+    Exactly one Payment and one RecoveryCase should exist, and no 500s returned."""
+    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
+    event1 = f"evt_{uuid.uuid4().hex[:14]}"
+    event2 = f"evt_{uuid.uuid4().hex[:14]}"
+
+    payload = generate_payment_failed_payload(payment_id)
+    raw_body = json.dumps(payload).encode("utf-8")
+    sig = compute_signature(raw_body)
+
+    headers1 = {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": sig,
+        "X-Razorpay-Event-Id": event1,
+    }
+    headers2 = {
+        "Content-Type": "application/json",
+        "X-Razorpay-Signature": sig,
+        "X-Razorpay-Event-Id": event2,
+    }
+
+    # Execute exactly concurrently
+    tasks = [
+        async_client.post("/v1/webhooks/razorpay", content=raw_body, headers=headers1),
+        async_client.post("/v1/webhooks/razorpay", content=raw_body, headers=headers2),
+    ]
+    responses = await asyncio.gather(*tasks)
+
+    # Neither request should 500
+    for r in responses:
+        assert r.status_code == 200
+
+    statuses = [r.json()["status"] for r in responses]
+    # One must succeed, one must detect existing payment
+    assert "created" in statuses
+    assert "payment_already_recorded" in statuses
+
+    # Verify database state
+    async with TestSessionLocal() as session:
+        # Exactly one Payment
+        pay_res = await session.execute(
+            select(Payment).where(Payment.razorpay_payment_id == payment_id)
+        )
+        assert len(pay_res.scalars().all()) == 1
+
+        # Exactly one RecoveryCase
+        case_res = await session.execute(
+            select(RecoveryCase).where(RecoveryCase.original_payment_id == payment_id)
+        )
+        assert len(case_res.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_duplicate_delivery(async_client):
     """Concurrent deliveries of the exact same webhook must be atomically resolved."""
     payment_id = f"pay_{uuid.uuid4().hex[:14]}"
@@ -445,6 +499,18 @@ async def test_audit_event_and_payload_redaction(async_client):
         payment = pay_res.scalar_one()
         snapshot = payment.payload_snapshot
 
+        # Check WebhookEvent payload minimization
+        wh_res = await session.execute(
+            select(WebhookEvent).where(WebhookEvent.razorpay_event_id == event_id)
+        )
+        webhook_event = wh_res.scalar_one()
+        min_payload = webhook_event.payload
+        assert (
+            "payload" not in min_payload
+        )  # The nested payload wrapper should be stripped
+        assert min_payload["event"] == "payment.failed"
+        assert min_payload["_payment_id"] == payment_id
+
         # Disallowed keys must be stripped
         assert "internal_routing_token" not in snapshot
         assert "secret_token_that_must_be_redacted" not in snapshot.get("card", {})
@@ -525,6 +591,75 @@ async def test_missing_payment_entity(async_client):
     )
     assert response.status_code == 400
     assert response.json()["error"] == "missing_payment_entity"
+
+
+@pytest.mark.asyncio
+async def test_invalid_payment_amount(async_client):
+    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
+    event_id = f"evt_{uuid.uuid4().hex[:14]}"
+    # Amount is negative or zero or missing
+    payload = generate_payment_failed_payload(payment_id, amount=-100)
+    raw_body = json.dumps(payload).encode("utf-8")
+    sig = compute_signature(raw_body)
+
+    response = await async_client.post(
+        "/v1/webhooks/razorpay",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": sig,
+            "X-Razorpay-Event-Id": event_id,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_payment_amount"
+
+
+@pytest.mark.asyncio
+async def test_invalid_payment_status(async_client):
+    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
+    event_id = f"evt_{uuid.uuid4().hex[:14]}"
+    payload = generate_payment_failed_payload(payment_id)
+    # Alter the status inside the entity
+    payload["payload"]["payment"]["entity"]["status"] = "authorized"
+    raw_body = json.dumps(payload).encode("utf-8")
+    sig = compute_signature(raw_body)
+
+    response = await async_client.post(
+        "/v1/webhooks/razorpay",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": sig,
+            "X-Razorpay-Event-Id": event_id,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_payment_status"
+
+
+@pytest.mark.asyncio
+async def test_invalid_timestamp(async_client):
+    payment_id = f"pay_{uuid.uuid4().hex[:14]}"
+    event_id = f"evt_{uuid.uuid4().hex[:14]}"
+    payload = generate_payment_failed_payload(payment_id)
+    # Alter the timestamp to be malformed
+    payload["payload"]["payment"]["entity"]["created_at"] = "invalid_timestamp_str"
+    payload["created_at"] = "invalid_timestamp_str"
+    raw_body = json.dumps(payload).encode("utf-8")
+    sig = compute_signature(raw_body)
+
+    response = await async_client.post(
+        "/v1/webhooks/razorpay",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": sig,
+            "X-Razorpay-Event-Id": event_id,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_timestamp"
 
 
 @pytest.mark.asyncio

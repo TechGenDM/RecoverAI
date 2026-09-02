@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -53,6 +54,17 @@ ALLOWED_CARD_KEYS = {
     "sub_type",
 }
 
+# Keys retained in the minimized webhook_events.payload
+# Excludes nested payload.payment.entity (which may contain sensitive gateway data)
+# and any account/merchant-level secrets.
+ALLOWED_WEBHOOK_EVENT_KEYS = {
+    "entity",
+    "account_id",
+    "event",
+    "contains",
+    "created_at",
+}
+
 
 def verify_razorpay_signature(
     raw_body: bytes, signature: str | None, secret: str
@@ -92,20 +104,98 @@ def sanitize_payment_entity(entity: dict[str, Any]) -> dict[str, Any]:
     return sanitized
 
 
-def parse_timestamp(ts: Any) -> datetime:
-    """Converts a Unix epoch timestamp or ISO string to UTC datetime."""
+def sanitize_webhook_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Creates a minimized/redacted representation of the webhook payload.
+
+    Only retains event envelope metadata. The nested payment entity is stored
+    separately in the sanitized Payment.payload_snapshot.
+    """
+    minimized: dict[str, Any] = {}
+    for key, val in payload.items():
+        if key in ALLOWED_WEBHOOK_EVENT_KEYS:
+            minimized[key] = val
+
+    # Include only the payment ID from nested payload for traceability
+    nested_payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
+    if isinstance(nested_payment, dict) and "id" in nested_payment:
+        minimized["_payment_id"] = nested_payment["id"]
+
+    return minimized
+
+
+def parse_timestamp(ts: Any) -> datetime | None:
+    """Converts a Unix epoch timestamp or ISO string to UTC datetime.
+
+    Returns None if the timestamp is missing, malformed, or not a recognized type.
+    Callers must handle None explicitly — no silent fabrication of failure time.
+    """
     if isinstance(ts, (int, float)):
-        return datetime.fromtimestamp(ts, tz=UTC)
+        if ts <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(ts, tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            return None
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts)
             return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         except ValueError:
-            pass
-    return datetime.now(UTC)
+            return None
+    return None
 
 
 class WebhookIngestionService:
+    @staticmethod
+    async def _upsert_customer(
+        db: AsyncSession,
+        customer_id_str: str,
+        email: str | None,
+        contact: str | None,
+    ) -> Customer:
+        """Concurrency-safe customer upsert using ON CONFLICT DO NOTHING + SELECT.
+
+        Handles the race where two concurrent webhooks for the same customer_id
+        both try to INSERT simultaneously.
+        """
+        # Attempt INSERT with ON CONFLICT DO NOTHING
+        stmt = (
+            insert(Customer)
+            .values(
+                razorpay_customer_id=customer_id_str,
+                email=email,
+                phone=contact,
+                name=None,
+            )
+            .on_conflict_do_nothing(index_elements=["razorpay_customer_id"])
+            .returning(Customer.id)
+        )
+        result = await db.execute(stmt)
+        new_id = result.scalar_one_or_none()
+
+        if new_id is not None:
+            # We inserted successfully; flush to ensure ID is available
+            await db.flush()
+            # Re-fetch the full ORM object
+            cust_result = await db.execute(
+                select(Customer).where(Customer.id == new_id)
+            )
+            return cust_result.scalar_one()
+
+        # Another transaction already created this customer; SELECT it
+        cust_result = await db.execute(
+            select(Customer).where(Customer.razorpay_customer_id == customer_id_str)
+        )
+        customer = cust_result.scalar_one()
+
+        # Update contact info if provided and currently empty
+        if email and not customer.email:
+            customer.email = email
+        if contact and not customer.phone:
+            customer.phone = contact
+
+        return customer
+
     @staticmethod
     async def process_webhook(
         event_id: str,
@@ -120,18 +210,23 @@ class WebhookIngestionService:
         3. Persists customer, payment, recovery_case, and audit_event in one atomic transaction.
         4. Never calls external APIs, LLMs, or executors.
         5. Preserves invariant: one original payment -> at most one RecoveryCase.
+        6. Stores only minimized/redacted data in webhook_events.payload.
+        7. Rejects malformed timestamps, invalid amounts, and unexpected statuses.
         """
         event_type = payload.get("event")
         if not event_type:
             return 400, {"error": "missing_event_type"}
 
-        # 1. Atomic deduplication of webhook event ID using ON CONFLICT DO NOTHING
+        # 1. Minimize webhook payload before persisting (data-minimization policy)
+        minimized_payload = sanitize_webhook_payload(payload)
+
+        # 2. Atomic deduplication of webhook event ID using ON CONFLICT DO NOTHING
         stmt = (
             insert(WebhookEvent)
             .values(
                 razorpay_event_id=event_id,
                 event_type=event_type,
-                payload=payload,
+                payload=minimized_payload,
                 signature_verified=True,
                 processed=False,
             )
@@ -149,7 +244,7 @@ class WebhookIngestionService:
                 "event_id": event_id,
             }
 
-        # 2. Check event type support
+        # 3. Check event type support
         if event_type != "payment.failed":
             # Record that this unsupported event was received and mark processed
             event_obj = await db.get(WebhookEvent, webhook_event_id)
@@ -163,7 +258,7 @@ class WebhookIngestionService:
                 "event_id": event_id,
             }
 
-        # 3. Extract and validate payment entity
+        # 4. Extract and validate payment entity
         payment_payload = payload.get("payload", {}).get("payment", {})
         entity = payment_payload.get("entity", {})
         if not entity or not isinstance(entity, dict):
@@ -186,7 +281,49 @@ class WebhookIngestionService:
             await db.commit()
             return 400, {"error": "missing_payment_id"}
 
-        # 4. Check if payment already exists in database
+        # 5. Validate payment amount: must be a positive integer
+        raw_amount = entity.get("amount")
+        if not isinstance(raw_amount, int) or raw_amount <= 0:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processing_error = (
+                    f"Invalid payment amount: {raw_amount!r} "
+                    "(must be a positive integer in paise)"
+                )
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 400, {"error": "invalid_payment_amount"}
+
+        # 6. Validate payment entity status == "failed"
+        entity_status = entity.get("status")
+        if entity_status != "failed":
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processing_error = (
+                    f"Unexpected payment status '{entity_status}' "
+                    "for payment.failed event"
+                )
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 400, {"error": "invalid_payment_status"}
+
+        # 7. Validate timestamp — reject malformed/missing created_at
+        raw_ts = entity.get("created_at") or payload.get("created_at")
+        failed_at = parse_timestamp(raw_ts)
+        if failed_at is None:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processing_error = (
+                    f"Missing or malformed payment created_at: {raw_ts!r}"
+                )
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 400, {"error": "invalid_timestamp"}
+
+        # 8. Check if payment already exists in database (idempotency for same payment_id)
         existing_payment_result = await db.execute(
             select(Payment).where(Payment.razorpay_payment_id == razorpay_payment_id)
         )
@@ -215,40 +352,19 @@ class WebhookIngestionService:
                 "event_id": event_id,
             }
 
-        # 5. Extract customer details and upsert if razorpay_customer_id is present
+        # 9. Concurrency-safe customer upsert if razorpay_customer_id is present
         customer_id_str = entity.get("customer_id")
         email = entity.get("email")
         contact = entity.get("contact")
         customer_record: Customer | None = None
 
         if customer_id_str:
-            cust_stmt = select(Customer).where(
-                Customer.razorpay_customer_id == customer_id_str
+            customer_record = await WebhookIngestionService._upsert_customer(
+                db, customer_id_str, email, contact
             )
-            cust_res = await db.execute(cust_stmt)
-            customer_record = cust_res.scalar_one_or_none()
 
-            if customer_record:
-                # Update contact info if provided
-                if email and not customer_record.email:
-                    customer_record.email = email
-                if contact and not customer_record.phone:
-                    customer_record.phone = contact
-            else:
-                customer_record = Customer(
-                    razorpay_customer_id=customer_id_str,
-                    email=email,
-                    phone=contact,
-                    name=None,
-                )
-                db.add(customer_record)
-                await db.flush()  # Flush to generate customer_record.id
-
-        # 6. Sanitize payload snapshot
+        # 10. Sanitize payload snapshot
         sanitized_entity = sanitize_payment_entity(entity)
-        failed_at = parse_timestamp(
-            entity.get("created_at") or payload.get("created_at")
-        )
 
         # Extract payment method details
         method = entity.get("method")
@@ -257,13 +373,13 @@ class WebhookIngestionService:
         card_network = card.get("network") if isinstance(card, dict) else None
         vpa = entity.get("vpa")
 
-        # 7. Create Payment record
+        # 11. Create Payment record — handle concurrent unique constraint violation
         payment = Payment(
             razorpay_payment_id=razorpay_payment_id,
             customer_id=customer_record.id if customer_record else None,
-            amount=int(entity.get("amount", 0)),
+            amount=raw_amount,
             currency=entity.get("currency", "INR"),
-            status=entity.get("status", "failed"),
+            status="failed",
             error_code=entity.get("error_code"),
             error_description=entity.get("error_description"),
             error_source=entity.get("error_source"),
@@ -279,9 +395,36 @@ class WebhookIngestionService:
             failed_at=failed_at,
         )
         db.add(payment)
-        await db.flush()  # Generate payment.id for recovery case foreign key
 
-        # 8. Create RecoveryCase record with status CREATED
+        try:
+            await db.flush()  # Generate payment.id; may raise IntegrityError
+        except IntegrityError:
+            # Concurrent insertion of same razorpay_payment_id — another
+            # transaction won the race. Rollback and return idempotent response.
+            await db.rollback()
+
+            # Re-open a clean session state to read existing records
+            existing_payment_result = await db.execute(
+                select(Payment).where(
+                    Payment.razorpay_payment_id == razorpay_payment_id
+                )
+            )
+            existing_payment = existing_payment_result.scalar_one_or_none()
+            existing_case_result = await db.execute(
+                select(RecoveryCase).where(
+                    RecoveryCase.original_payment_id == razorpay_payment_id
+                )
+            )
+            existing_case = existing_case_result.scalar_one_or_none()
+
+            return 200, {
+                "status": "payment_already_recorded",
+                "payment_id": razorpay_payment_id,
+                "case_id": str(existing_case.id) if existing_case else None,
+                "event_id": event_id,
+            }
+
+        # 12. Create RecoveryCase record with status CREATED
         recovery_window_expires_at = failed_at + timedelta(
             hours=settings.RECOVERY_MAX_WINDOW_HOURS
         )
@@ -304,7 +447,7 @@ class WebhookIngestionService:
         db.add(recovery_case)
         await db.flush()  # Generate recovery_case.id for audit event
 
-        # 9. Create AuditEvent record
+        # 13. Create AuditEvent record
         audit_payload = {
             "payment_id": razorpay_payment_id,
             "amount": payment.amount,
@@ -325,13 +468,13 @@ class WebhookIngestionService:
         )
         db.add(audit_event)
 
-        # 10. Mark webhook_event as processed
+        # 14. Mark webhook_event as processed
         event_obj = await db.get(WebhookEvent, webhook_event_id)
         if event_obj:
             event_obj.processed = True
             event_obj.processed_at = datetime.now(UTC)
 
-        # 11. Commit transaction atomically
+        # 15. Commit transaction atomically
         await db.commit()
 
         return 200, {
