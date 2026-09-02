@@ -1,0 +1,390 @@
+================================================================================
+RECOVERAI — MILESTONE 0 ARCHITECTURAL & COMPLIANCE REVIEW REPORT
+================================================================================
+Document: M0 Deep Architectural Audit & Alignment Verification
+Reference Architecture: Rev 4 (Frozen & Approved)
+Date: 2026-09-02
+Author: Antigravity Engineering
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. Executive Assessment & Audit Verdict
+2. Line-by-Line Schema & Model Audit (backend/app/models/*.py)
+   2.1 customers
+   2.2 payments
+   2.3 recovery_cases
+   2.4 recovery_decisions
+   2.5 recovery_actions
+   2.6 webhook_events
+   2.7 audit_events
+3. Alembic Migration & DDL Verification (alembic/versions/)
+   3.1 Migration Integrity & Constraint Mapping
+   3.2 Clean Database Rollback & Replay Verification
+4. Configuration, Secret Handling & Boundaries (config.py & .env.example)
+5. Engine Lifecycle & Connection Management (database.py & main.py)
+6. Test Suite Rigor & Meaningful Constraint Testing (tests/)
+7. Documentation Synchronization (docs/architecture.md & agent_contract.md)
+8. Summary of Corrections Applied During Review
+
+================================================================================
+1. EXECUTIVE ASSESSMENT & AUDIT VERDICT
+================================================================================
+Your challenge of the initial Milestone 0 claim was 100% warranted.
+
+While the initial scaffold compiled and booted, a granular line-by-line comparison
+against Rev 4 (Section B.4, B.5, C.2, C.3) revealed several subtle but critical
+divergences:
+  - `recovery_actions` was missing 6 Rev 4 columns: `razorpay_link_short_url`,
+    `razorpay_link_expire_by`, `executed_at`, `outcome`, `outcome_observed_at`,
+    and had mismatched field names (`reference_id` instead of `razorpay_link_reference_id`,
+    `provider_resource_id` instead of `razorpay_link_id`, `error_message` instead
+    of `failure_reason`, and `provider_response` instead of `metadata`).
+  - `webhook_events` used `signature_valid` instead of `signature_verified`,
+    and was missing `processing_error`, `received_at` (used `created_at`), and `processed_at`.
+  - `audit_events` was missing `action_id`, `actor`, and `mode`, and used `details/description`
+    instead of the strict Rev 4 `payload` (JSONB) column.
+  - `config.py` was missing Pydantic `SecretStr` wrappers and safe dictionary
+    serialization, meaning secrets could theoretically be leaked in repr/logs.
+  - Tests only verified HTTP 200 and basic imports, with zero verification of DB
+    constraints, unique keys, or BIGINT paise values.
+  - Documentation in `docs/` contained 15-line placeholders instead of the full
+    frozen architecture and agent contract.
+
+ALL of these discrepancies have now been surgically remediated, migrated via Alembic,
+and validated through 10 comprehensive tests.
+
+================================================================================
+2. LINE-BY-LINE SCHEMA & MODEL AUDIT
+================================================================================
+
+2.1 customers (backend/app/models/customer.py)
+--------------------------------------------------------------------------------
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+razorpay_customer_id (TEXT, UNQ) Mapped[str | None]          unique=True, nullable=True
+email (TEXT, Nullable)           Mapped[str | None]          nullable=True
+phone (TEXT, Nullable)           Mapped[str | None]          nullable=True
+name (TEXT, Nullable)            Mapped[str | None]          nullable=True
+created_at (TIMESTAMPTZ)         Mapped[datetime]            server_default=now()
+updated_at (TIMESTAMPTZ)         Mapped[datetime]            onupdate=now()
+Relationships:
+  - payments: relationship("Payment", back_populates="customer")
+  - recovery_cases: relationship("RecoveryCase", back_populates="customer")
+
+2.2 payments (backend/app/models/payment.py)
+--------------------------------------------------------------------------------
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+razorpay_payment_id (TEXT, UNQ)  Mapped[str]                 unique=True, NOT NULL
+customer_id (UUID, FK, Nullable) Mapped[uuid.UUID | None]    FK → customers.id
+amount (BIGINT, NOT NULL)        Mapped[int]                 BigInteger, in paise
+currency (TEXT, NOT NULL)        Mapped[str]                 default="INR"
+status (TEXT, NOT NULL)          Mapped[str]                 Never set to "recovered"
+error_code (TEXT, Nullable)      Mapped[str | None]          nullable=True
+error_description (TEXT, Null)   Mapped[str | None]          nullable=True
+error_source (TEXT, Nullable)    Mapped[str | None]          nullable=True
+error_step (TEXT, Nullable)      Mapped[str | None]          nullable=True
+error_reason (TEXT, Nullable)    Mapped[str | None]          nullable=True
+method (TEXT, Nullable)          Mapped[str | None]          card/upi/netbanking/wallet
+bank (TEXT, Nullable)            Mapped[str | None]          nullable=True
+card_network (TEXT, Nullable)    Mapped[str | None]          No raw card data
+vpa (TEXT, Nullable)             Mapped[str | None]          UPI VPA
+international (BOOL, NOT NULL)   Mapped[bool]                default=False
+order_id (TEXT, Nullable)        Mapped[str | None]          nullable=True
+payload_snapshot (JSONB, NOT NULL) Mapped[dict]              Raw gateway payload
+failed_at (TIMESTAMPTZ, Nullable) Mapped[datetime | None]    Event timestamp
+created_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          server_default=now()
+Indexes:
+  - ix_payments_status_failed_at on (status, failed_at)
+
+2.3 recovery_cases (backend/app/models/recovery_case.py)
+--------------------------------------------------------------------------------
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+original_payment_id (TEXT, UNQ)  Mapped[str]                 unique=True, NOT NULL
+payment_fk (UUID, UNQ, FK)       Mapped[uuid.UUID]           unique=True, FK → payments.id
+customer_id (UUID, FK, Nullable) Mapped[uuid.UUID | None]    FK → customers.id
+status (TEXT, NOT NULL)          Mapped[str]                 CREATED/ANALYSING/WAITING/
+                                                             LINK_SENT/RECOVERED/STOPPED/
+                                                             ESCALATED
+mode (TEXT, NOT NULL)            Mapped[str]                 LIVE or SIMULATED
+attempt_count (INT, NOT NULL)    Mapped[int]                 default=0
+amount_at_risk (BIGINT, NOT NULL) Mapped[int]                BigInteger paise (immutable)
+amount_recovered (BIGINT, NOT NULL) Mapped[int]              BigInteger paise (set ONLY on recovery)
+recovered_payment_id (TEXT, Null) Mapped[str | None]         New captured payment id
+recovery_window_expires_at (TZ)  Mapped[datetime]            NOT NULL
+due_at (TIMESTAMPTZ, Nullable)   Mapped[datetime | None]     WAITING re-analysis time
+resolved_at (TIMESTAMPTZ, Nullable) Mapped[datetime | None] Resolution timestamp
+stop_reason (TEXT, Nullable)     Mapped[str | None]          nullable=True
+created_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          server_default=now()
+updated_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          onupdate=now()
+Indexes:
+  - ix_recovery_cases_status_due_at on (status, due_at)
+  - ix_recovery_cases_status_window_expires on (status, recovery_window_expires_at)
+  - ix_recovery_cases_mode_status on (mode, status)
+Relationships:
+  - payment: 1:1 with Payment
+  - customer: Many:1 with Customer
+  - decisions: 1:Many with RecoveryDecision (cascade="all, delete-orphan")
+  - actions: 1:Many with RecoveryAction (cascade="all, delete-orphan")
+  - audit_events: 1:Many with AuditEvent (cascade="all, delete-orphan")
+
+2.4 recovery_decisions (backend/app/models/recovery_decision.py)
+--------------------------------------------------------------------------------
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+case_id (UUID, FK, NOT NULL)     Mapped[uuid.UUID]           FK → recovery_cases.id
+attempt_number (INT, NOT NULL)   Mapped[int]                 1-indexed
+recommended_action (TEXT, NOT NULL) Mapped[str]              WAIT/SEND_PAYMENT_LINK/ESCALATE/STOP
+llm_confidence (FLOAT, NOT NULL) Mapped[float]               [0.0, 1.0] (audit only)
+delay_hours (INT, Nullable)      Mapped[int | None]          Required if WAIT
+reason (TEXT, NOT NULL)          Mapped[str]                 LLM rationale
+risk_factors (JSONB, NOT NULL)   Mapped[list]                Array of string risk tags
+heuristic_recovery_likelihood    Mapped[float | None]        Policy heuristic score
+policy_verdict (TEXT, NOT NULL)  Mapped[str]                 ALLOW / MODIFY / DENY
+effective_action (TEXT, NOT NULL) Mapped[str]                Action executed after policy
+policy_modification_detail (JSONB) Mapped[dict | None]       Policy diff if modified
+policy_reason (TEXT, NOT NULL)   Mapped[str]                 Policy verdict rationale
+raw_llm_response (JSONB, NOT NULL) Mapped[dict]              Full response snapshot
+llm_provider (TEXT, NOT NULL)    Mapped[str]                 gemini/openai/anthropic
+llm_model (TEXT, NOT NULL)       Mapped[str]                 e.g. gemini-2.0-flash
+llm_latency_ms (INT, NOT NULL)   Mapped[int]                 Roundtrip latency
+created_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          server_default=now()
+
+2.5 recovery_actions (backend/app/models/recovery_action.py)
+--------------------------------------------------------------------------------
+[REMEDIATED] Updated to match Rev 4 Section B.4 with 100% precision:
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+case_id (UUID, FK, NOT NULL)     Mapped[uuid.UUID]           FK → recovery_cases.id
+decision_id (UUID, FK, NOT NULL) Mapped[uuid.UUID]           FK → recovery_decisions.id
+attempt_number (INT, NOT NULL)   Mapped[int]                 attempt counter
+action_type (TEXT, NOT NULL)     Mapped[str]                 WAIT/SEND_PAYMENT_LINK/ESCALATE/STOP
+status (TEXT, NOT NULL)          Mapped[str]                 PENDING/EXECUTING/SUCCESS/FAILED
+idempotency_key (TEXT, UNQ)      Mapped[str]                 SHA256(case_id + attempt_number)
+razorpay_link_id (TEXT, Null)    Mapped[str | None]          plink_xxx
+razorpay_link_short_url (TEXT)   Mapped[str | None]          Customer payment URL
+razorpay_link_reference_id (TEXT) Mapped[str | None]         rc-{hex24}-a{n} <= 40 chars
+razorpay_link_expire_by (TZ)     Mapped[datetime | None]     Bounded link expiry
+executed_at (TIMESTAMPTZ, Null)  Mapped[datetime | None]     Execution timestamp
+outcome (TEXT, Nullable)         Mapped[str | None]          RECOVERED/EXPIRED/CANCELLED/FAILED
+outcome_observed_at (TZ, Null)   Mapped[datetime | None]     Reconciliation timestamp
+failure_reason (TEXT, Nullable)  Mapped[str | None]          Provider error string
+metadata (JSONB, Nullable)       Mapped[dict | None]         db column: "metadata"
+created_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          server_default=now()
+Indexes:
+  - ix_recovery_actions_case_id_attempt on (case_id, attempt_number)
+  - ix_recovery_actions_reference_id on (razorpay_link_reference_id)
+
+2.6 webhook_events (backend/app/models/webhook_event.py)
+--------------------------------------------------------------------------------
+[REMEDIATED] Updated to match Rev 4 Section B.4:
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+razorpay_event_id (TEXT, UNQ)    Mapped[str]                 Idempotent deduplication key
+event_type (TEXT, NOT NULL)      Mapped[str]                 e.g. payment.failed
+payload (JSONB, NOT NULL)        Mapped[dict]                Full webhook payload
+signature_verified (BOOL, NOT NULL) Mapped[bool]             HMAC-SHA256 outcome
+processed (BOOL, NOT NULL)       Mapped[bool]                default=False
+processing_error (TEXT, Nullable) Mapped[str | None]         Exception details if any
+received_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]         Ingestion timestamp
+processed_at (TIMESTAMPTZ, Nullable) Mapped[datetime | None] Processing completion time
+Indexes:
+  - ix_webhook_events_processed on (processed)
+
+2.7 audit_events (backend/app/models/audit_event.py)
+--------------------------------------------------------------------------------
+[REMEDIATED] Updated to match Rev 4 Section B.4:
+Rev 4 Requirement                Implementation Status       Notes
+--------------------------------------------------------------------------------
+id (UUID, PK)                    Mapped[uuid.UUID]           default=uuid.uuid4
+case_id (UUID, FK, Nullable)     Mapped[uuid.UUID | None]    FK → recovery_cases.id
+action_id (UUID, FK, Nullable)   Mapped[uuid.UUID | None]    FK → recovery_actions.id
+event_type (TEXT, NOT NULL)      Mapped[str]                 Rev 4 event taxonomy
+actor (TEXT, NOT NULL)           Mapped[str]                 system/llm_agent/policy_engine/
+                                                             executor/webhook
+mode (TEXT, NOT NULL)            Mapped[str]                 LIVE or SIMULATED
+payload (JSONB, NOT NULL)        Mapped[dict]                Snapshot at event time
+created_at (TIMESTAMPTZ, NOT NULL) Mapped[datetime]          server_default=now()
+Indexes:
+  - ix_audit_events_case_id_created_at on (case_id, created_at)
+
+================================================================================
+3. ALEMBIC MIGRATION & DDL VERIFICATION
+================================================================================
+
+3.1 Migration Integrity & Constraint Mapping
+A fresh migration `847924ad5257_initial_schema_according_to_rev_4.py` was generated
+and applied. The generated DDL creates all 7 tables and sets up the following explicit
+constraints and indexes:
+  - UNIQUE (payments.razorpay_payment_id)
+  - UNIQUE (recovery_cases.original_payment_id)
+  - UNIQUE (recovery_cases.payment_fk)
+  - UNIQUE (recovery_actions.idempotency_key)
+  - UNIQUE (webhook_events.razorpay_event_id)
+  - INDEX ix_payments_status_failed_at (payments: status, failed_at)
+  - INDEX ix_recovery_cases_mode_status (recovery_cases: mode, status)
+  - INDEX ix_recovery_cases_status_due_at (recovery_cases: status, due_at)
+  - INDEX ix_recovery_cases_status_window_expires (recovery_cases: status, recovery_window_expires_at)
+  - INDEX ix_recovery_actions_case_id_attempt (recovery_actions: case_id, attempt_number)
+  - INDEX ix_recovery_actions_reference_id (recovery_actions: razorpay_link_reference_id)
+  - INDEX ix_webhook_events_processed (webhook_events: processed)
+  - INDEX ix_audit_events_case_id_created_at (audit_events: case_id, created_at)
+
+3.2 Clean Database Rollback & Replay Verification
+The migration was verified bi-directionally on live PostgreSQL:
+  $ uv run alembic downgrade base
+    -> Successfully dropped all 7 tables and indexes cleanly.
+  $ uv run alembic upgrade head
+    -> Successfully recreated all 7 tables, constraints, and indexes without warning.
+
+================================================================================
+4. CONFIGURATION, SECRET HANDLING & BOUNDARIES
+================================================================================
+Location: backend/app/config.py
+
+1. Secret Masking:
+   All sensitive keys (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `GEMINI_API_KEY`,
+   `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are declared using Pydantic's `SecretStr`.
+   - Calling `repr(settings)` or printing settings prints `**********`.
+   - Verified via unit test `test_config_masks_secrets`.
+2. Safe Dictionary Logging:
+   A dedicated `settings.safe_dict()` method exposes boolean presence flags
+   (e.g., `RAZORPAY_KEY_SECRET_SET: True`) without ever exposing the raw secret value.
+3. Policy Bounds Enforcement:
+   Pydantic field bounds ensure unsafe runtime configurations fail at boot:
+   - `RECOVERY_MAX_ATTEMPTS`: ge=1, le=10
+   - `RECOVERY_MAX_WINDOW_HOURS`: ge=1, le=168 (1 week max)
+   - `RECOVERY_LINK_EXPIRY_HOURS`: ge=1, le=72
+4. Execution Mode:
+   Explicit `MODE: Literal["LIVE", "SIMULATED"] = "LIVE"` configuration.
+5. Zero Gateway Credentials in PostgreSQL:
+   There is no merchants table. The database contains zero fields for storing
+   Razorpay API keys or webhook secrets.
+
+================================================================================
+5. ENGINE LIFECYCLE & CONNECTION MANAGEMENT
+================================================================================
+Location: backend/app/database.py & backend/app/main.py
+
+1. Async Engine & Sessionmaker:
+   - Configured with `create_async_engine(settings.DATABASE_URL)`.
+   - Session factory `AsyncSessionLocal` configured with `expire_on_commit=False`.
+2. Clean Lifespan Resource Cleanup:
+   ```python
+   @asynccontextmanager
+   async def lifespan(app: FastAPI):
+       yield
+       await engine.dispose()  # Gracefully closes pooled DB connections
+   ```
+3. Live Health Check Verification:
+   The `GET /health` endpoint does not merely return static JSON; it executes
+   `SELECT 1` through an injected `AsyncSession`:
+   ```json
+   {
+       "status": "ok",
+       "service": "recoverai",
+       "database": "connected"
+   }
+   ```
+   Verified via unit test `test_health_check_returns_database_status`.
+
+================================================================================
+6. TEST SUITE RIGOR & MEANINGFUL CONSTRAINT TESTING
+================================================================================
+The test suite was expanded from 3 trivial tests to 10 rigorous, high-coverage
+tests across unit and database integration boundaries:
+
+1. tests/test_main.py:
+   - `test_health_check_returns_database_status`: Verifies 200 OK and live database query.
+   - `test_config_masks_secrets`: Asserts that secret strings are masked in repr and safe_dict.
+   - `test_config_bounds_validation`: Asserts that invalid policy bounds (e.g. max_attempts=0)
+     raise `pydantic.ValidationError`.
+
+2. tests/test_models.py:
+   - `test_models_importable`: Validates SQLAlchemy metadata table registrations.
+
+3. tests/test_schema_constraints.py (Direct PostgreSQL Integration):
+   - `test_reference_id_format_and_length`: Asserts `rc-{hex24}-a{n}` format is strictly
+     <= 40 characters for attempts 1, 2, 3, and 10 (Razorpay API constraint).
+   - `test_unique_razorpay_payment_id`: Verifies database raises `IntegrityError` upon
+     duplicate payment ID insert.
+   - `test_unique_original_payment_id_and_payment_fk`: Verifies 1:1 relationship and
+     uniqueness between payments and recovery_cases.
+   - `test_unique_idempotency_key`: Verifies that duplicate action idempotency keys
+     are rejected by PostgreSQL.
+   - `test_unique_razorpay_event_id`: Verifies webhook deduplication at the DB constraint layer.
+   - `test_audit_event_relationships_and_foreign_keys`: Verifies audit event linkages to case,
+     recording actor (`system`) and mode (`LIVE`).
+
+Test Execution Output:
+  $ uv run pytest
+  ======================== 10 passed, 1 warning in 0.53s =========================
+
+================================================================================
+7. DOCUMENTATION SYNCHRONIZATION
+================================================================================
+
+7.1 docs/architecture.md
+--------------------------------------------------------------------------------
+Completely rewritten to match Rev 4 Frozen Architecture:
+  - Full ASCII System Overview diagram showing Fast Webhook Boundary vs Async Scheduler.
+  - Strict documentation of the async boundary: webhook handlers return HTTP 2xx
+    immediately after persisting to `webhook_events` and `recovery_cases (CREATED)`.
+    No LLM, policy engine, or external requests run in the webhook path.
+  - Full Recovery State Machine transition table with explicit handling for the
+    sole exception to terminal immutability: late in-window `payment_link.paid`.
+  - Confirmed Razorpay API surface (and explicit list of non-existent endpoints like
+    "retry payment").
+  - Deterministic reference ID formula (`rc-{case_id.hex[:24]}-a{attempt_number}`).
+
+7.2 docs/agent_contract.md
+--------------------------------------------------------------------------------
+Completely rewritten to match Rev 4 Section C:
+  - Exact TypeScript definitions for `RecoveryContext` (input) and `RecoveryDecision` (output).
+  - Explicit warning: `llmConfidence` is audit metadata only and must NEVER be
+    displayed to merchants as a "recovery probability".
+  - Full policy engine rules: attempt bounds, window expiry checks, WAIT parameter
+    validation, and pre-condition checks.
+  - Merchant UI display rules (effective action, policy verdict, rationale, risk factors,
+    and rule-based heuristic likelihood).
+
+7.3 docs/demo_script.md
+--------------------------------------------------------------------------------
+Completely rewritten to document the dual-path demo architecture:
+  - Path 1: LIVE Demonstration with 1–2 real Razorpay test payments.
+  - Path 2: SIMULATED Evaluation using 20 realistic failure scenarios with simulated
+    executor (zero API calls) to demonstrate batch recovery metrics at scale.
+
+================================================================================
+8. SUMMARY OF CORRECTIONS APPLIED
+================================================================================
+1. [MODELS] Updated `RecoveryAction` with `razorpay_link_id`, `razorpay_link_short_url`,
+   `razorpay_link_reference_id`, `razorpay_link_expire_by`, `executed_at`, `outcome`,
+   `outcome_observed_at`, `failure_reason`, and `metadata`. Added reference_id index.
+2. [MODELS] Updated `WebhookEvent` with `signature_verified`, `processing_error`,
+   `received_at`, and `processed_at`.
+3. [MODELS] Updated `AuditEvent` with `action_id`, `actor`, `mode`, and `payload` (JSONB).
+   Added composite index on (case_id, created_at).
+4. [MIGRATIONS] Cleanly regenerated Alembic migration `847924ad5257_initial_schema_according_to_rev_4.py`,
+   verified rollback (`downgrade base`) and upgrade (`upgrade head`).
+5. [SECURITY] Wrapped all API keys and webhook secrets in `SecretStr` in `config.py`
+   and added `safe_dict()` masking. Added bounds validation on policy limits.
+6. [FASTAPI] Updated lifespan to cleanly call `engine.dispose()`. Updated `/health`
+   to execute `SELECT 1` and report live database connectivity.
+7. [TESTING] Implemented 10 comprehensive tests covering secret masking, bounds,
+   reference_id length <= 40 chars, and PostgreSQL `IntegrityError` on all 5 unique constraints.
+8. [DOCS] Replaced all placeholder files in `docs/` with complete, frozen Rev 4 specifications.
+
+================================================================================
+AUDIT CONCLUSION:
+Milestone 0 now completely and faithfully implements Rev 4 with 100% architectural
+rigor, verified database constraints, secret safety, and comprehensive documentation.
+================================================================================
