@@ -18,11 +18,15 @@ class WebhookEvent(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
 
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    signature_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    signature_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
     processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    processing_error: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
+    received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     __table_args__ = (Index("ix_webhook_events_processed", "processed"),)

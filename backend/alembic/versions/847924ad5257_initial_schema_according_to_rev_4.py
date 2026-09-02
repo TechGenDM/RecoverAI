@@ -1,8 +1,8 @@
-"""Initial migration
+"""Initial schema according to Rev 4
 
-Revision ID: 6fa46ae3e28c
+Revision ID: 847924ad5257
 Revises:
-Create Date: 2026-09-02 20:24:07.028649
+Create Date: 2026-09-02 20:38:24.314503
 
 """
 
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "6fa46ae3e28c"
+revision: str = "847924ad5257"
 down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -51,14 +51,16 @@ def upgrade() -> None:
         sa.Column("razorpay_event_id", sa.String(), nullable=False),
         sa.Column("event_type", sa.String(), nullable=False),
         sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("signature_valid", sa.Boolean(), nullable=False),
+        sa.Column("signature_verified", sa.Boolean(), nullable=False),
         sa.Column("processed", sa.Boolean(), nullable=False),
+        sa.Column("processing_error", sa.String(), nullable=True),
         sa.Column(
-            "created_at",
+            "received_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
         ),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("razorpay_event_id"),
     )
@@ -168,25 +170,6 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_table(
-        "audit_events",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("case_id", sa.UUID(), nullable=False),
-        sa.Column("event_type", sa.String(), nullable=False),
-        sa.Column("description", sa.String(), nullable=False),
-        sa.Column("details", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["case_id"],
-            ["recovery_cases.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_table(
         "recovery_decisions",
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("case_id", sa.UUID(), nullable=False),
@@ -230,23 +213,21 @@ def upgrade() -> None:
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("case_id", sa.UUID(), nullable=False),
         sa.Column("decision_id", sa.UUID(), nullable=False),
+        sa.Column("attempt_number", sa.Integer(), nullable=False),
         sa.Column("action_type", sa.String(), nullable=False),
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("idempotency_key", sa.String(), nullable=False),
-        sa.Column("reference_id", sa.String(), nullable=True),
-        sa.Column("provider_resource_id", sa.String(), nullable=True),
-        sa.Column(
-            "provider_response", postgresql.JSONB(astext_type=sa.Text()), nullable=True
-        ),
-        sa.Column("error_message", sa.String(), nullable=True),
+        sa.Column("razorpay_link_id", sa.String(), nullable=True),
+        sa.Column("razorpay_link_short_url", sa.String(), nullable=True),
+        sa.Column("razorpay_link_reference_id", sa.String(), nullable=True),
+        sa.Column("razorpay_link_expire_by", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("executed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("outcome", sa.String(), nullable=True),
+        sa.Column("outcome_observed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("failure_reason", sa.String(), nullable=True),
+        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column(
             "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
@@ -262,15 +243,61 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("idempotency_key"),
     )
+    op.create_index(
+        "ix_recovery_actions_case_id_attempt",
+        "recovery_actions",
+        ["case_id", "attempt_number"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_recovery_actions_reference_id",
+        "recovery_actions",
+        ["razorpay_link_reference_id"],
+        unique=False,
+    )
+    op.create_table(
+        "audit_events",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("case_id", sa.UUID(), nullable=True),
+        sa.Column("action_id", sa.UUID(), nullable=True),
+        sa.Column("event_type", sa.String(), nullable=False),
+        sa.Column("actor", sa.String(), nullable=False),
+        sa.Column("mode", sa.String(), nullable=False),
+        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["action_id"],
+            ["recovery_actions.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["case_id"],
+            ["recovery_cases.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_audit_events_case_id_created_at",
+        "audit_events",
+        ["case_id", "created_at"],
+        unique=False,
+    )
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index("ix_audit_events_case_id_created_at", table_name="audit_events")
+    op.drop_table("audit_events")
+    op.drop_index("ix_recovery_actions_reference_id", table_name="recovery_actions")
+    op.drop_index("ix_recovery_actions_case_id_attempt", table_name="recovery_actions")
     op.drop_table("recovery_actions")
     op.drop_table("recovery_decisions")
-    op.drop_table("audit_events")
     op.drop_index(
         "ix_recovery_cases_status_window_expires", table_name="recovery_cases"
     )
