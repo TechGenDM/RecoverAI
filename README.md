@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%200%20Complete-success?style=for-the-badge)
+![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%201%20Complete-success?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)

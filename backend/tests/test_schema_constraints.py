@@ -1,7 +1,9 @@
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -23,8 +25,8 @@ TestSessionLocal = async_sessionmaker(
 )
 
 
-@pytest.fixture
-async def db_session() -> AsyncSession:
+@pytest_asyncio.fixture
+async def session() -> AsyncGenerator[AsyncSession, None]:
     async with TestSessionLocal() as session:
         yield session
 

@@ -19,10 +19,12 @@ def test_health_check_returns_database_status():
 
 def test_config_masks_secrets():
     # Verify that secrets are wrapped in SecretStr and not exposed in str/repr
+    from pydantic import SecretStr
+
     test_settings = Settings(
-        RAZORPAY_KEY_SECRET="super_secret_rzp_key",
-        RAZORPAY_WEBHOOK_SECRET="super_secret_wh_key",
-        GEMINI_API_KEY="super_secret_gemini_key",
+        RAZORPAY_KEY_SECRET=SecretStr("super_secret_rzp_key"),
+        RAZORPAY_WEBHOOK_SECRET=SecretStr("super_secret_wh_key"),
+        GEMINI_API_KEY=SecretStr("super_secret_gemini_key"),
     )
     repr_str = repr(test_settings)
     assert "super_secret_rzp_key" not in repr_str
