@@ -2,7 +2,9 @@
 
 <div align="center">
 
-![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%201%20Complete-success?style=for-the-badge)
+![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%203%20Complete-success?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-71%20Passing-brightgreen?style=for-the-badge)
+![Audit](https://img.shields.io/badge/Production%20Audit-15%2F15%20Verified-blue?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
@@ -24,60 +26,91 @@
 ```
 Failed Razorpay Payment
          ↓
-  Webhook Intake (Async boundary: Verify signature → Persist → 2xx)
+  Webhook Intake (Async boundary: Verify signature → Deduplicate → Persist → 2xx)
          ↓
-  Database Scheduler (Picks CREATED / WAITING cases)
+  Database Scheduler (Phase 1: Atomically claims CREATED / WAITING cases)
          ↓
-  Context Builder (Failure analysis, customer telemetry, attempt history)
+  Context Builder (Failure telemetry, customer history, attempt history, remaining window)
          ↓
-  LLM Diagnostic Agent (Proposes structured recovery strategy)
+  LLM Diagnostic Agent (Gemini 2.0 Flash / Mock: Proposes structured recovery strategy)
          ↓
-  Deterministic Policy Engine (Hard validation against merchant rules & bounds)
+  Deterministic Policy Engine (Hard validation: Max attempts, window expiry, contact check)
          ↓
-  Recovery Executor (Dispatches Payment Link / Schedules Wait / Escalates)
+  Recovery Executor (Category B Reconciliation → Category A Execution → Payment Links)
          ↓
   Payment Reconciliation (Tracks recovery with distinct recovered_payment_id)
 ```
 
 ---
 
-## 🏛️ System Architecture & Invariants
+## 🏛️ System Architecture & State Machine
 
 ```mermaid
 flowchart TD
-    subgraph WebhookLayer["1. Fast Webhook Boundary"]
-        WH[Razorpay Webhook] -->|raw-body HMAC verification| EP["POST /v1/webhooks/razorpay"]
+    subgraph WebhookLayer["1. Fast Webhook Boundary (M1)"]
+        WH[Razorpay Webhook: payment.failed] -->|raw-body HMAC verification| EP["POST /v1/webhooks/razorpay"]
         EP -->|Idempotent Event Log| WHTable[(webhook_events)]
         EP -->|Initial Case Record| RCTable[(recovery_cases: CREATED)]
         EP -->|Instant 2xx Response| WHResp[Return HTTP 200 OK]
     end
 
-    subgraph AsyncPipeline["2. Database-Driven Scheduler"]
-        SCHED[Background Poller / Scheduler] -->|Polls CREATED / WAITING cases| RCTable
+    subgraph AnalysisEngine["2. Diagnostic & Policy Engine (M2)"]
+        SCHED[Async Scheduler: claim_batch] -->|FOR UPDATE SKIP LOCKED| RCTable
+        RCTable -.->|Transitions to ANALYSING| SCHED
         SCHED --> CB[Context Builder]
-        CB --> LLM[Bounded LLM Agent]
+        CB --> LLM[Bounded LLM Agent: Gemini 2.0]
         LLM -->|Strategy Proposal| PE[Deterministic Policy Engine]
-        PE -->|Validates Limits & Bounds| EXEC[Recovery Executor]
-        EXEC -->|Creates Payment Link| RZP_API[Razorpay API]
-        EXEC -->|Append-Only Audit| AUDIT[(audit_events)]
-        EXEC -->|Update State| RCTable
+        PE -->|ALLOW / MODIFY / DENY| DEC[(recovery_decisions)]
     end
 
-    subgraph Reconciliation["3. Reconciliation & Recovery"]
-        RZP_PAID[payment_link.paid webhook] --> RC_SYNC[Reconcile Payment]
+    subgraph RecoveryExecutor["3. Recovery Executor & Reconciliation (M3)"]
+        EXEC_SCHED[M3 Discovery / Executor] -->|Category B: Reconcile EXECUTING| RECON_B[GET /v1/payment_links/?reference_id]
+        EXEC_SCHED -->|Category A: Claim Decisions| CLAIM[Atomic Claim & Transition]
+        CLAIM -->|Zero DB Txn during HTTP| RZP_API[Razorpay API POST /v1/payment_links]
+        RZP_API -->|Payment Link Generated| ACT[(recovery_actions)]
+        ACT -->|Transitions to LINK_SENT| RCTable
+        RZP_API -.->|Unknown / Timeout| UNK[Leaves Case EXECUTING]
+    end
+
+    subgraph WebhookRecon["4. Payment Reconciliation (M3)"]
+        RZP_PAID[Razorpay Webhook: payment_link.paid] --> RC_SYNC[Reconcile Payment Event]
+        RC_SYNC -->|Validate Amount & Window| RCTable
         RC_SYNC -->|Mark Case RECOVERED| RCTable
-        RC_SYNC -->|Log recovered_payment_id| RCTable
+        RC_SYNC -->|Record recovered_payment_id| PAYTable[(payments)]
     end
 ```
 
-### Core Invariants & Safety Guarantees
+### Complete 7-State Case Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED: payment.failed webhook
+    CREATED --> ANALYSING: M2 Scheduler claims case
+    ANALYSING --> WAITING: Policy Engine delays execution (due_at set)
+    WAITING --> ANALYSING: due_at passed & re-claimed
+    ANALYSING --> EXECUTING: Decision = SEND_PAYMENT_LINK (M3 claims)
+    ANALYSING --> STOPPED: Decision = STOP / Policy DENY
+    EXECUTING --> LINK_SENT: Payment Link successfully created / reconciled
+    EXECUTING --> STOPPED: Window expired / Multiple links anomaly
+    LINK_SENT --> RECOVERED: payment_link.paid webhook received
+    LINK_SENT --> STOPPED: Window expires without payment
+    STOPPED --> RECOVERED: Late payment_link.paid with in-window timestamp
+```
+
+### Core Invariants & Production Safety Guarantees
 
 1. **Async Webhook Boundary**: Webhook handlers verify signatures, deduplicate events, persist state, and return HTTP 2xx immediately. No LLM or external calls are executed in the webhook path.
 2. **Deterministic Policy Engine**: The LLM agent is advisory only. Every action must satisfy strict constraints (max attempts, max window hours, link expiry cap, merchant thresholds) before execution.
 3. **Strict Payment Separation**: The original failed payment (`original_payment_id`) is never marked as paid. A distinct successful payment (`recovered_payment_id`) is tracked and verified.
-4. **Bounded Reference Length**: All Razorpay `reference_id` strings follow the deterministic formula `rc-{case_id_hex[:24]}-a{n}` (≤ 31 characters), respecting Razorpay's 40-character maximum.
-5. **Terminal State Immutability**: `RECOVERED` and `STOPPED` are terminal states. The sole exception is a late `payment_link.paid` webhook where the payment timestamp was inside the allowed recovery window.
-6. **Zero Credential DB Persistence**: Merchant and gateway API keys/secrets are never written to the database. They are managed exclusively through environment configurations.
+4. **Bounded Reference Length**: All Razorpay `reference_id` strings follow the deterministic formula `rc-{case_id_hex[:24]}-a{n}` (≤ 31 characters), strictly respecting Razorpay's 40-character maximum.
+5. **Zero Open DB Transactions During HTTP Calls**: All database row locks and transactions commit *before* outbound Razorpay HTTP calls begin, completely eliminating connection pool starvation and lock contention.
+6. **Category B Reconciliation Precedes Category A Execution**: Any unresolved `EXECUTING` action is reconciled via `GET /v1/payment_links/?reference_id=...` before any new link creation is attempted.
+7. **Unknown External Outcome Safety**: Timeouts or network failures during link creation leave the action and case in `EXECUTING` state—never `WAITING`—guaranteeing that M2 diagnostic re-analysis is never triggered accidentally.
+8. **M2-Owned Attempt Counter**: M3 never increments `RecoveryCase.attempt_count`. The attempt counter is owned strictly by M2, ensuring deterministic idempotency across retries.
+9. **Exact Reference Matching & Anomaly Detection**: Reconciliation strictly verifies that retrieved links match `reference_id` and `amount` exactly. Detecting multiple matching links triggers an automated safety stop and alert.
+10. **Terminal State Immutability**: `RECOVERED` and `STOPPED` are terminal states. The sole exception is a late `payment_link.paid` webhook where the payment timestamp was inside the allowed recovery window.
+11. **Zero Credential DB Persistence**: Merchant and gateway API keys/secrets are never written to the database. They are managed exclusively through environment configurations.
+12. **Idempotent Webhook Processing**: Re-delivery of identical webhook event IDs returns HTTP 200 with `duplicate_ignored`, without side effects or duplicate ledger entries.
 
 ---
 
