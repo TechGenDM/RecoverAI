@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
-    LLM_MODEL: str = "gemini-2.0-flash"
+    LLM_MODEL: str = "gemini-2.5-flash"
     GEMINI_API_KEY: SecretStr = Field(default=SecretStr(""))
     OPENAI_API_KEY: SecretStr = Field(default=SecretStr(""))
     ANTHROPIC_API_KEY: SecretStr = Field(default=SecretStr(""))
@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     RECOVERY_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10)
     RECOVERY_MAX_WINDOW_HOURS: int = Field(default=72, ge=1, le=168)
     RECOVERY_LINK_EXPIRY_HOURS: int = Field(default=24, ge=1, le=72)
+
+    # Agent / Scheduler constraints
+    LLM_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=120)
+    SCHEDULER_BATCH_SIZE: int = Field(default=10, ge=1, le=100)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -56,6 +60,8 @@ class Settings(BaseSettings):
             "RECOVERY_MAX_ATTEMPTS": self.RECOVERY_MAX_ATTEMPTS,
             "RECOVERY_MAX_WINDOW_HOURS": self.RECOVERY_MAX_WINDOW_HOURS,
             "RECOVERY_LINK_EXPIRY_HOURS": self.RECOVERY_LINK_EXPIRY_HOURS,
+            "LLM_TIMEOUT_SECONDS": self.LLM_TIMEOUT_SECONDS,
+            "SCHEDULER_BATCH_SIZE": self.SCHEDULER_BATCH_SIZE,
         }
 
 
