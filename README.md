@@ -153,17 +153,52 @@ RecoverAI/
 │   │   ├── config.py              # Pydantic-settings configuration
 │   │   ├── database.py            # Async engine and session factories
 │   │   ├── main.py                # FastAPI app initialization and lifespan
-│   │   └── models/                # SQLAlchemy 2.x declarative models
-│   │       ├── customer.py
-│   │       ├── payment.py
-│   │       ├── recovery_case.py
-│   │       ├── recovery_decision.py
-│   │       ├── recovery_action.py
-│   │       ├── webhook_event.py
-│   │       └── audit_event.py
-│   └── tests/                     # Unit and integration test suites
+│   │   ├── models/                # SQLAlchemy 2.x declarative models
+│   │   │   ├── customer.py
+│   │   │   ├── payment.py
+│   │   │   ├── recovery_case.py
+│   │   │   ├── recovery_decision.py
+│   │   │   ├── recovery_action.py
+│   │   │   ├── webhook_event.py
+│   │   │   └── audit_event.py
+│   │   ├── routers/               # API endpoints
+│   │   │   ├── health.py          # Health probe
+│   │   │   ├── webhooks.py        # Razorpay signature & webhook receiver
+│   │   │   └── scheduler.py       # Scheduler tick trigger endpoint
+│   │   ├── schemas/               # Pydantic validation & transfer schemas
+│   │   │   ├── context.py         # Diagnostic context schema
+│   │   │   ├── decision.py        # LLM decision & policy schemas
+│   │   │   ├── safety.py          # Safety evaluation schemas
+│   │   │   └── executor.py        # Execution results & error schemas
+│   │   └── services/              # Core business & autonomous logic
+│   │       ├── webhook_service.py # Ingestion & webhook reconciliation
+│   │       ├── context_builder.py # Failure & customer telemetry aggregator
+│   │       ├── analysis_service.py# Diagnostic agent orchestrator
+│   │       ├── safety_validator.py# Deterministic Policy Engine
+│   │       ├── scheduler.py       # Background claim & tick coordinator
+│   │       ├── recovery_service.py# Discovery, reconciliation & execution
+│   │       ├── razorpay_client.py # Async Razorpay API client
+│   │       ├── llm/               # Pluggable LLM reasoning providers
+│   │       │   ├── base.py
+│   │       │   ├── gemini_provider.py
+│   │       │   └── mock_provider.py
+│   │       └── executor/          # Recovery execution backends
+│   │           ├── base.py
+│   │           ├── live_executor.py
+│   │           └── simulated_executor.py
+│   └── tests/                     # 71 automated unit & integration tests
+│       ├── conftest.py            # Database isolation & test fixtures
 │       ├── test_main.py           # Health check and config tests
-│       └── test_models.py         # Declarative model validation tests
+│       ├── test_models.py         # Declarative model validation tests
+│       ├── test_schema_constraints.py # Database constraints verification
+│       ├── test_webhook_ingestion.py  # Signature, deduplication, case creation
+│       ├── test_context_builder.py    # Failure telemetry & history aggregation
+│       ├── test_llm_provider.py       # LLM provider contract tests
+│       ├── test_safety_validator.py   # Policy engine boundary checks
+│       ├── test_analysis_service.py   # End-to-end diagnostic analysis
+│       ├── test_scheduler.py          # Async locking & batch claims
+│       ├── test_executor.py           # Atomic execution & link reconciliation
+│       └── test_payment_link_webhooks.py # Paid webhook reconciliation
 └── frontend/                      # Next.js 15 / React / TypeScript App
     ├── .env.local.example         # Frontend environment template
     ├── package.json               # Frontend dependencies and scripts
