@@ -119,7 +119,11 @@ class RazorpayClient:
             )
 
         # Parse error response
-        error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        error_data = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
         error_obj = error_data.get("error", {})
         error_code = error_obj.get("code", "UNKNOWN")
         error_desc = error_obj.get("description", response.text[:200])
@@ -168,7 +172,11 @@ class RazorpayClient:
                 raw=data,
             )
 
-        error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        error_data = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
         error_obj = error_data.get("error", {})
         raise RazorpayAPIError(
             status_code=response.status_code,
@@ -217,7 +225,11 @@ class RazorpayClient:
                 )
             return results
 
-        error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        error_data = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
         error_obj = error_data.get("error", {})
         raise RazorpayAPIError(
             status_code=response.status_code,

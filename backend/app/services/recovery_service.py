@@ -18,7 +18,7 @@ INVARIANTS (Rev 4):
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +67,9 @@ def _build_customer_block(customer: Customer | None) -> dict[str, str] | None:
     return block if block else None
 
 
-async def discover_new_executions(session: AsyncSession) -> list[tuple[RecoveryDecision, RecoveryCase]]:
+async def discover_new_executions(
+    session: AsyncSession,
+) -> list[tuple[RecoveryDecision, RecoveryCase]]:
     """Category A: Find SEND_PAYMENT_LINK decisions with no RecoveryAction.
 
     Returns (decision, case) pairs with FOR UPDATE SKIP LOCKED on cases.
@@ -90,7 +92,9 @@ async def discover_new_executions(session: AsyncSession) -> list[tuple[RecoveryD
     return list(result.tuples().all())
 
 
-async def discover_reconciliation_targets(session: AsyncSession) -> list[tuple[RecoveryAction, RecoveryCase]]:
+async def discover_reconciliation_targets(
+    session: AsyncSession,
+) -> list[tuple[RecoveryAction, RecoveryCase]]:
     """Category B: Find EXECUTING actions with unknown outcomes.
 
     Returns (action, case) pairs with FOR UPDATE SKIP LOCKED on cases.
@@ -122,7 +126,7 @@ async def claim_for_execution(
     Returns the created RecoveryAction, or None if the case should be skipped
     (e.g. insufficient time remaining).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     min_validity = timedelta(minutes=settings.PAYMENT_LINK_MIN_VALIDITY_MINUTES)
 
     reference_id = _generate_reference_id(case.id, case.attempt_count)
@@ -207,16 +211,20 @@ async def _persist_execution_result(
     Re-reads the case with FOR UPDATE to prevent overwriting RECOVERED.
     M3 may only perform EXECUTING → LINK_SENT.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Re-read with lock to protect against webhook race
     case = await session.get(RecoveryCase, case_id, with_for_update=True)
     action = await session.get(RecoveryAction, action_id)
 
     print(f"DEBUG: persist case={case} action={action} result={result}")
-    
+
     if case is None or action is None:
-        logger.error("Case %s or action %s not found during result persistence", case_id, action_id)
+        logger.error(
+            "Case %s or action %s not found during result persistence",
+            case_id,
+            action_id,
+        )
         return
 
     if case.status == "RECOVERED":
@@ -255,19 +263,22 @@ async def _persist_execution_result(
                 event_type="UNEXPECTED_STATE_DURING_EXECUTION",
                 actor="executor",
                 mode=mode,
-                payload={"current_status": case.status, "result_success": result.success},
+                payload={
+                    "current_status": case.status,
+                    "result_success": result.success,
+                },
             )
         )
         return
 
     if result.success:
-        print(f"DEBUG: result.success is True, updating action status")
+        print("DEBUG: result.success is True, updating action status")
         action.status = "SUCCESS"
         action.razorpay_link_id = result.razorpay_link_id
         action.razorpay_link_short_url = result.short_url
         if result.expire_by:
             action.razorpay_link_expire_by = datetime.fromtimestamp(
-                result.expire_by, tz=timezone.utc
+                result.expire_by, tz=UTC
             )
         action.executed_at = now
         # Only transition EXECUTING → LINK_SENT
@@ -369,7 +380,7 @@ async def _reconcile_action(
                 action.failure_reason = f"Reconciliation failed: {result.error}"
                 case.status = "STOPPED"
                 case.stop_reason = f"Payment link not found: {result.error}"
-                case.resolved_at = datetime.now(timezone.utc)
+                case.resolved_at = datetime.now(UTC)
                 session.add(
                     AuditEvent(
                         case_id=case.id,
@@ -451,10 +462,14 @@ async def _reconcile_action(
             action = await session.get(RecoveryAction, action.id)
             case = await session.get(RecoveryCase, case.id)
             action.status = "FAILED"
-            action.failure_reason = f"RECONCILIATION_ANOMALY: {len(exact_matches)} matching links"
+            action.failure_reason = (
+                f"RECONCILIATION_ANOMALY: {len(exact_matches)} matching links"
+            )
             case.status = "STOPPED"
-            case.stop_reason = f"Multiple payment links found for reference_id {reference_id}"
-            case.resolved_at = datetime.now(timezone.utc)
+            case.stop_reason = (
+                f"Multiple payment links found for reference_id {reference_id}"
+            )
+            case.resolved_at = datetime.now(UTC)
             session.add(
                 AuditEvent(
                     case_id=case.id,
@@ -487,7 +502,7 @@ async def _reconcile_action(
             action.failure_reason = "INSUFFICIENT_TIME_ON_RECONCILIATION"
             case.status = "STOPPED"
             case.stop_reason = "Insufficient recovery window on reconciliation"
-            case.resolved_at = datetime.now(timezone.utc)
+            case.resolved_at = datetime.now(UTC)
             session.add(
                 AuditEvent(
                     case_id=case.id,
@@ -510,13 +525,19 @@ async def _reconcile_action(
     )
 
     # Handle duplicate reference_id error (defensive fallback)
-    if result.definite_failure and result.error and "DUPLICATE_REFERENCE" in result.error:
+    if (
+        result.definite_failure
+        and result.error
+        and "DUPLICATE_REFERENCE" in result.error
+    ):
         logger.info(
             "Duplicate reference_id on retry for %s — attempting GET reconciliation",
             reference_id,
         )
         followup = await executor.reconcile_by_reference_id(reference_id)
-        followup_matches = [r for r in followup if r.success and r.reference_id == reference_id]
+        followup_matches = [
+            r for r in followup if r.success and r.reference_id == reference_id
+        ]
         if len(followup_matches) == 1:
             result = followup_matches[0]
         else:
@@ -584,7 +605,7 @@ async def _execute_new_decision(
                 if case.status == "EXECUTING":
                     case.status = "STOPPED"
                     case.stop_reason = "Recovery window expired before execution"
-                    case.resolved_at = datetime.now(timezone.utc)
+                    case.resolved_at = datetime.now(UTC)
                 session.add(
                     AuditEvent(
                         case_id=case_id,
@@ -607,9 +628,15 @@ async def _execute_new_decision(
     )
 
     # Handle duplicate reference_id error (defensive fallback)
-    if result.definite_failure and result.error and "DUPLICATE_REFERENCE" in result.error:
+    if (
+        result.definite_failure
+        and result.error
+        and "DUPLICATE_REFERENCE" in result.error
+    ):
         followup = await executor.reconcile_by_reference_id(reference_id)
-        followup_matches = [r for r in followup if r.success and r.reference_id == reference_id]
+        followup_matches = [
+            r for r in followup if r.success and r.reference_id == reference_id
+        ]
         if len(followup_matches) == 1:
             result = followup_matches[0]
 
@@ -623,7 +650,7 @@ def _compute_expire_by(case: RecoveryCase) -> int | None:
 
     Returns None if insufficient time remains.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     min_validity = timedelta(minutes=settings.PAYMENT_LINK_MIN_VALIDITY_MINUTES)
 
     if case.recovery_window_expires_at <= now + min_validity:
