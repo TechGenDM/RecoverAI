@@ -10,13 +10,20 @@ Tests 1-18 from the Rev 4 test plan:
 import asyncio
 import datetime
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuditEvent, Customer, Payment, RecoveryCase, RecoveryDecision, WebhookEvent
+from app.models import (
+    AuditEvent,
+    Customer,
+    Payment,
+    RecoveryCase,
+    RecoveryDecision,
+    WebhookEvent,
+)
 from app.models.recovery_action import RecoveryAction
 from app.services.executor.base import ExecutionResult
 from app.services.executor.simulated_executor import SimulatedRecoveryExecutor
@@ -25,7 +32,6 @@ from app.services.recovery_service import (
     _generate_reference_id,
     claim_for_execution,
     discover_new_executions,
-    discover_reconciliation_targets,
     run_execution_phase,
 )
 
@@ -89,8 +95,7 @@ async def _create_test_case(
         attempt_count=attempt_count,
         amount_at_risk=amount,
         recovery_window_expires_at=(
-            datetime.datetime.now(datetime.UTC)
-            + datetime.timedelta(hours=window_hours)
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=window_hours)
         ),
     )
     session.add(case)
@@ -155,16 +160,22 @@ async def test_send_payment_link_executes(db_session: AsyncSession) -> None:
     # Verify action was created and case transitioned
     async with db_session.begin():
         actions = (
-            await db_session.execute(
-                select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+            (
+                await db_session.execute(
+                    select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(actions) == 1
         action = actions[0]
         await db_session.refresh(action)
         assert action.action_type == "SEND_PAYMENT_LINK"
         assert action.status == "SUCCESS"
-        assert action.razorpay_link_id == f"plink_sim_{action.razorpay_link_reference_id}"
+        assert (
+            action.razorpay_link_id == f"plink_sim_{action.razorpay_link_reference_id}"
+        )
 
         refreshed_case = await db_session.get(RecoveryCase, case.id)
         assert refreshed_case is not None
@@ -217,7 +228,9 @@ async def test_expired_case_does_not_execute(db_session: AsyncSession) -> None:
     """Test 5: Expired window → FAILED action, STOPPED case."""
     await _clean_db(db_session)
     _, _, case = await _create_test_case(
-        db_session, status="ANALYSING", window_hours=-1  # already expired
+        db_session,
+        status="ANALYSING",
+        window_hours=-1,  # already expired
     )
     decision = await _create_decision(db_session, case, "SEND_PAYMENT_LINK")
     await db_session.commit()
@@ -233,10 +246,14 @@ async def test_expired_case_does_not_execute(db_session: AsyncSession) -> None:
     # Verify FAILED action was persisted
     async with db_session.begin():
         actions = (
-            await db_session.execute(
-                select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+            (
+                await db_session.execute(
+                    select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(actions) == 1
         assert actions[0].status == "FAILED"
         assert actions[0].failure_reason == "INSUFFICIENT_TIME"
@@ -282,6 +299,7 @@ async def test_simulated_never_calls_razorpay(db_session: AsyncSession) -> None:
 
     # Verify simulated_executor.py doesn't import RazorpayClient
     import inspect
+
     import app.services.executor.simulated_executor as sim_mod
 
     source = inspect.getsource(sim_mod)
@@ -312,7 +330,7 @@ async def test_m2_scheduler_never_picks_executing_case(
 ) -> None:
     """Test 9: M2 claim_batch() returns zero EXECUTING cases."""
     await _clean_db(db_session)
-    _, _, case = await _create_test_case(db_session, status="EXECUTING")
+    _, _, _case = await _create_test_case(db_session, status="EXECUTING")
     await db_session.commit()
 
     from app.services.scheduler import claim_batch
@@ -331,7 +349,7 @@ async def test_m3_timeout_leaves_case_executing_not_waiting(
     """Test 10: Timeout → case.status = EXECUTING, NOT WAITING."""
     await _clean_db(db_session)
     _, _, case = await _create_test_case(db_session, status="ANALYSING")
-    decision = await _create_decision(db_session, case, "SEND_PAYMENT_LINK")
+    await _create_decision(db_session, case, "SEND_PAYMENT_LINK")
     await db_session.commit()
 
     # Mock executor that returns timeout
@@ -558,9 +576,7 @@ async def test_exact_reference_id_match_required(
 
     with patch("app.services.recovery_service.get_executor") as mock_get:
         mock_executor = AsyncMock()
-        mock_executor.reconcile_by_reference_id = AsyncMock(
-            return_value=[unrelated]
-        )
+        mock_executor.reconcile_by_reference_id = AsyncMock(return_value=[unrelated])
         mock_executor.execute = AsyncMock(return_value=new_link)
         mock_get.return_value = mock_executor
 
@@ -664,9 +680,7 @@ async def test_timeout_then_existing_link_no_duplicate(
 
     with patch("app.services.recovery_service.get_executor") as mock_get:
         mock_executor = AsyncMock()
-        mock_executor.reconcile_by_reference_id = AsyncMock(
-            return_value=[existing]
-        )
+        mock_executor.reconcile_by_reference_id = AsyncMock(return_value=[existing])
         mock_executor.execute = AsyncMock()
         mock_get.return_value = mock_executor
 
@@ -688,22 +702,19 @@ async def test_concurrent_workers_one_action(db_session: AsyncSession) -> None:
     """Test 17: Two workers → exactly one RecoveryAction (idempotency_key unique)."""
     await _clean_db(db_session)
     _, _, case = await _create_test_case(db_session, status="ANALYSING")
-    decision = await _create_decision(db_session, case, "SEND_PAYMENT_LINK")
+    await _create_decision(db_session, case, "SEND_PAYMENT_LINK")
     await db_session.commit()
 
     from app.database import AsyncSessionLocal
 
-    results: list[RecoveryAction | None] = []
-
     async def worker() -> RecoveryAction | None:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                targets = await discover_new_executions(session)
-                if not targets:
-                    return None
-                d, c = targets[0]
-                action = await claim_for_execution(session, d, c)
-                return action
+        async with AsyncSessionLocal() as session, session.begin():
+            targets = await discover_new_executions(session)
+            if not targets:
+                return None
+            d, c = targets[0]
+            action = await claim_for_execution(session, d, c)
+            return action
 
     # Run two workers concurrently
     task1 = asyncio.create_task(worker())
@@ -720,10 +731,14 @@ async def test_concurrent_workers_one_action(db_session: AsyncSession) -> None:
     # Verify exactly one action in DB
     async with db_session.begin():
         all_actions = (
-            await db_session.execute(
-                select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+            (
+                await db_session.execute(
+                    select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(all_actions) <= 1
 
 
@@ -737,8 +752,6 @@ async def test_concurrent_workers_one_payment_link(
     await db_session.commit()
 
     execution_count = 0
-
-    original_get_executor = None
 
     with patch("app.services.recovery_service.get_executor") as mock_get:
         mock_executor = AsyncMock()
@@ -801,10 +814,14 @@ async def test_attempt_count_not_incremented_by_m3(
 
         # Verify reference_id uses original attempt_count
         actions = (
-            await db_session.execute(
-                select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+            (
+                await db_session.execute(
+                    select(RecoveryAction).where(RecoveryAction.case_id == case.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(actions) == 1
         expected_ref = _generate_reference_id(case.id, original_attempt_count)
         assert actions[0].razorpay_link_reference_id == expected_ref

@@ -13,7 +13,14 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuditEvent, Customer, Payment, RecoveryCase, RecoveryDecision, WebhookEvent
+from app.models import (
+    AuditEvent,
+    Customer,
+    Payment,
+    RecoveryCase,
+    RecoveryDecision,
+    WebhookEvent,
+)
 from app.models.recovery_action import RecoveryAction
 from app.services.webhook_service import WebhookIngestionService
 
@@ -67,8 +74,7 @@ async def _create_test_case_and_action(
         attempt_count=1,
         amount_at_risk=amount,
         recovery_window_expires_at=(
-            datetime.datetime.now(datetime.UTC)
-            + datetime.timedelta(hours=window_hours)
+            datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=window_hours)
         ),
     )
     session.add(case)
@@ -187,10 +193,14 @@ async def test_valid_paid_webhook_recovers(db_session: AsyncSession) -> None:
 
         # Verify a new Payment record was created
         payments = (
-            await db_session.execute(
-                select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+            (
+                await db_session.execute(
+                    select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(payments) == 1
         new_payment = payments[0]
         assert new_payment.amount == 10000
@@ -200,7 +210,7 @@ async def test_valid_paid_webhook_recovers(db_session: AsyncSession) -> None:
 async def test_duplicate_paid_webhook_idempotent(db_session: AsyncSession) -> None:
     """Test 20: Same event_id processed twice is idempotent."""
     await _clean_db(db_session)
-    case, action = await _create_test_case_and_action(db_session)
+    _case, action = await _create_test_case_and_action(db_session)
     await db_session.commit()
 
     now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
@@ -221,17 +231,21 @@ async def test_duplicate_paid_webhook_idempotent(db_session: AsyncSession) -> No
     # Only one new payment should exist
     async with db_session.begin():
         payments = (
-            await db_session.execute(
-                select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+            (
+                await db_session.execute(
+                    select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(payments) == 1
 
 
 async def test_unknown_reference_id_ignored(db_session: AsyncSession) -> None:
     """Test 22: Unknown reference_id is safely ignored (200 OK)."""
     await _clean_db(db_session)
-    case, action = await _create_test_case_and_action(db_session)
+    _case, _action = await _create_test_case_and_action(db_session)
     await db_session.commit()
 
     now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
@@ -295,7 +309,7 @@ async def test_out_of_window_payment_not_recovered(db_session: AsyncSession) -> 
 async def test_exact_amount_recovery(db_session: AsyncSession) -> None:
     """Test 27: amount == amount_at_risk → RECOVERED."""
     await _clean_db(db_session)
-    case, action = await _create_test_case_and_action(db_session, amount=5000)
+    _case, action = await _create_test_case_and_action(db_session, amount=5000)
     await db_session.commit()
 
     now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
@@ -332,10 +346,14 @@ async def test_mismatched_amount_not_recovered(db_session: AsyncSession) -> None
 
         # But the payment should STILL be recorded for traceability
         payments = (
-            await db_session.execute(
-                select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+            (
+                await db_session.execute(
+                    select(Payment).where(Payment.razorpay_payment_id == "pay_new123")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(payments) == 1
         assert payments[0].amount == 5000
 
