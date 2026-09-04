@@ -13,9 +13,13 @@ class GeminiProvider(BaseLLMProvider):
         if not self.settings.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not set")
         # Sync client initialized once; async calls via client.aio
-        self.client = genai.Client(api_key=self.settings.GEMINI_API_KEY.get_secret_value())
+        self.client = genai.Client(
+            api_key=self.settings.GEMINI_API_KEY.get_secret_value()
+        )
 
-    async def analyze_case(self, context: RecoveryContext) -> tuple[RecoveryDecisionSchema, str]:
+    async def analyze_case(
+        self, context: RecoveryContext
+    ) -> tuple[RecoveryDecisionSchema, str]:
         prompt = f"""
 You are an AI recovery agent. Analyze the following payment failure context and decide the best recovery action.
 Context:
@@ -38,9 +42,11 @@ Provide your reasoning, risk factors, and confidence level.
                 response_schema=RecoveryDecisionSchema,
             ),
         )
-        
+
         parsed = response.parsed
         if not isinstance(parsed, RecoveryDecisionSchema):
-            raise TypeError("Failed to parse Gemini response into RecoveryDecisionSchema")
-            
+            raise TypeError(
+                "Failed to parse Gemini response into RecoveryDecisionSchema"
+            )
+
         return parsed, response.text or ""

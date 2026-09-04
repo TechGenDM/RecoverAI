@@ -7,7 +7,7 @@ from .mock_provider import MockLLMProvider
 
 def get_llm_provider() -> BaseLLMProvider:
     if settings.LLM_PROVIDER == "gemini":
-        # In tests, if GEMINI_API_KEY is not set, we can fallback to mock if desired, 
+        # In tests, if GEMINI_API_KEY is not set, we can fallback to mock if desired,
         # but config should dictate.
         try:
             return GeminiProvider()

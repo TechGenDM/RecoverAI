@@ -4,7 +4,9 @@ from .base import BaseLLMProvider
 
 
 class MockLLMProvider(BaseLLMProvider):
-    async def analyze_case(self, context: RecoveryContext) -> tuple[RecoveryDecisionSchema, str]:
+    async def analyze_case(
+        self, context: RecoveryContext
+    ) -> tuple[RecoveryDecisionSchema, str]:
         # Deterministic logic for testing
         if context.payment.error_reason == "fraud_suspected":
             action = "ESCALATE"
@@ -14,13 +16,13 @@ class MockLLMProvider(BaseLLMProvider):
             action = "WAIT"
         else:
             action = "SEND_PAYMENT_LINK"
-            
+
         decision = RecoveryDecisionSchema(
             case_id=context.case_id,
             action=action,
             delay_hours=0.0 if action != "WAIT" else 2.0,
             llm_confidence=0.9,
             reason=f"Mock decision based on {context.payment.error_reason}",
-            risk_factors=["mock_risk"]
+            risk_factors=["mock_risk"],
         )
         return decision, decision.model_dump_json()
