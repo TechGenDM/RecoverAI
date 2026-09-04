@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import AuditEvent, Customer, Payment, RecoveryCase, WebhookEvent
+from app.models.recovery_action import RecoveryAction
 
 logger = logging.getLogger(__name__)
 
@@ -238,15 +239,26 @@ class WebhookIngestionService:
 
         if webhook_event_id is None:
             # Duplicate webhook delivery detected; return 200 OK immediately
+            await db.rollback()
             return 200, {
                 "status": "duplicate_ignored",
                 "message": f"Webhook event {event_id} already ingested",
                 "event_id": event_id,
             }
 
-        # 3. Check event type support
+        # 3. Event type dispatch
+        if event_type == "payment_link.paid":
+            return await WebhookIngestionService._handle_payment_link_paid(
+                db, webhook_event_id, event_id, payload
+            )
+
+        if event_type in ("payment_link.expired", "payment_link.cancelled"):
+            return await WebhookIngestionService._handle_payment_link_terminal(
+                db, webhook_event_id, event_id, payload, event_type
+            )
+
         if event_type != "payment.failed":
-            # Record that this unsupported event was received and mark processed
+            # Unsupported event type — mark processed and ignore
             event_obj = await db.get(WebhookEvent, webhook_event_id)
             if event_obj:
                 event_obj.processed = True
@@ -254,7 +266,7 @@ class WebhookIngestionService:
             await db.commit()
             return 200, {
                 "status": "ignored",
-                "reason": f"Event type '{event_type}' not handled in M1",
+                "reason": f"Event type '{event_type}' not handled",
                 "event_id": event_id,
             }
 
@@ -483,4 +495,374 @@ class WebhookIngestionService:
             "event_id": event_id,
             "payment_id": razorpay_payment_id,
             "case_id": str(recovery_case.id),
+        }
+
+    # ── M3 Webhook Handlers ──────────────────────────────────────────
+
+    @staticmethod
+    async def _handle_payment_link_paid(
+        db: AsyncSession,
+        webhook_event_id: Any,
+        event_id: str,
+        payload: dict[str, Any],
+    ) -> tuple[int, dict[str, Any]]:
+        """Handle payment_link.paid webhook.
+
+        Verified payload paths (from official Razorpay docs):
+        - payload.payment_link.entity.reference_id
+        - payload.payment_link.entity.id (plink_*)
+        - payload.payment.entity.id (pay_*)
+        - payload.payment.entity.amount (paise)
+        - payload.payment.entity.status ("captured")
+        - payload.payment.entity.created_at (Unix timestamp)
+        """
+        # Extract payment_link entity
+        plink_entity = (
+            payload.get("payload", {})
+            .get("payment_link", {})
+            .get("entity", {})
+        )
+        reference_id = plink_entity.get("reference_id")
+        if not reference_id:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "no_reference_id"}
+
+        # Extract payment entity
+        payment_entity = (
+            payload.get("payload", {})
+            .get("payment", {})
+            .get("entity", {})
+        )
+        new_payment_id = payment_entity.get("id")
+        actual_amount = payment_entity.get("amount")
+        payment_status = payment_entity.get("status")
+        occurrence_ts_raw = payment_entity.get("created_at")
+
+        if not new_payment_id or not isinstance(actual_amount, int):
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processing_error = "Invalid payment entity in payment_link.paid"
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 400, {"error": "invalid_payment_entity"}
+
+        occurrence_time = parse_timestamp(occurrence_ts_raw)
+
+        # Look up RecoveryAction by reference_id
+        action_result = await db.execute(
+            select(RecoveryAction).where(
+                RecoveryAction.razorpay_link_reference_id == reference_id
+            )
+        )
+        action = action_result.scalar_one_or_none()
+
+        if action is None:
+            # Not our link — ignore gracefully
+            logger.info(
+                "payment_link.paid: no RecoveryAction for reference_id %s",
+                reference_id,
+            )
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "unknown_reference_id"}
+
+        # Load case
+        case = await db.get(RecoveryCase, action.case_id)
+        if case is None:
+            logger.error("Case %s not found for action %s", action.case_id, action.id)
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "case_not_found"}
+
+        # Guard: check case status
+        if case.status == "RECOVERED":
+            # Already recovered — idempotent
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "already_recovered", "case_id": str(case.id)}
+
+        if case.status not in ("LINK_SENT", "EXECUTING", "STOPPED"):
+            logger.warning(
+                "payment_link.paid for case %s in unexpected status %s",
+                case.id,
+                case.status,
+            )
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "unexpected_case_status"}
+
+        # Validate payment occurred inside recovery window
+        # Payment occurrence time determines eligibility, NOT webhook arrival
+        if occurrence_time is not None:
+            if occurrence_time > case.recovery_window_expires_at:
+                # Out-of-window payment — do NOT recover
+                db.add(
+                    AuditEvent(
+                        case_id=case.id,
+                        action_id=action.id,
+                        event_type="OUT_OF_WINDOW_PAYMENT",
+                        actor="webhook",
+                        mode=case.mode,
+                        payload={
+                            "payment_id": new_payment_id,
+                            "occurrence_time": occurrence_time.isoformat(),
+                            "window_expires_at": case.recovery_window_expires_at.isoformat(),
+                        },
+                    )
+                )
+                event_obj = await db.get(WebhookEvent, webhook_event_id)
+                if event_obj:
+                    event_obj.processed = True
+                    event_obj.processed_at = datetime.now(UTC)
+                await db.commit()
+                return 200, {
+                    "status": "out_of_window",
+                    "reason": "Payment occurred after recovery window",
+                }
+
+            # STOPPED case: only allow resurrection if payment inside window
+            if case.status == "STOPPED":
+                logger.info(
+                    "Late webhook: STOPPED case %s, payment inside window — allowing recovery",
+                    case.id,
+                )
+
+        # Validate exact amount match
+        expected_amount = case.amount_at_risk
+        if actual_amount != expected_amount:
+            # Amount mismatch — DO NOT credit as recovery revenue
+            # Persist the new payment for traceability
+            recovered_payment = Payment(
+                razorpay_payment_id=new_payment_id,
+                customer_id=case.customer_id,
+                amount=actual_amount,
+                currency=plink_entity.get("currency", "INR"),
+                status=payment_status or "captured",
+                payload_snapshot=sanitize_payment_entity(payment_entity),
+            )
+            db.add(recovered_payment)
+
+            case.status = "STOPPED"
+            case.stop_reason = (
+                f"Amount mismatch: expected={expected_amount}, actual={actual_amount}"
+            )
+            case.resolved_at = datetime.now(UTC)
+            action.outcome = "FAILED"
+            action.outcome_observed_at = datetime.now(UTC)
+
+            db.add(
+                AuditEvent(
+                    case_id=case.id,
+                    action_id=action.id,
+                    event_type="RECOVERY_AMOUNT_MISMATCH",
+                    actor="webhook",
+                    mode=case.mode,
+                    payload={
+                        "expected": expected_amount,
+                        "actual": actual_amount,
+                        "new_payment_id": new_payment_id,
+                    },
+                )
+            )
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {
+                "status": "amount_mismatch",
+                "expected": expected_amount,
+                "actual": actual_amount,
+            }
+
+        # ── Valid recovery ──
+        # Create NEW Payment record for the recovered payment
+        recovered_payment = Payment(
+            razorpay_payment_id=new_payment_id,
+            customer_id=case.customer_id,
+            amount=actual_amount,
+            currency=plink_entity.get("currency", "INR"),
+            status=payment_status or "captured",
+            payload_snapshot=sanitize_payment_entity(payment_entity),
+        )
+        db.add(recovered_payment)
+
+        # Update case to RECOVERED
+        case.status = "RECOVERED"
+        case.recovered_payment_id = new_payment_id
+        case.amount_recovered = actual_amount
+        # Use payment occurrence time, not webhook arrival time
+        case.resolved_at = occurrence_time or datetime.now(UTC)
+
+        # Update action outcome
+        action.outcome = "RECOVERED"
+        action.outcome_observed_at = datetime.now(UTC)
+
+        # Audit events
+        db.add(
+            AuditEvent(
+                case_id=case.id,
+                action_id=action.id,
+                event_type="RECOVERY_PAYMENT_RECEIVED",
+                actor="webhook",
+                mode=case.mode,
+                payload={
+                    "new_payment_id": new_payment_id,
+                    "amount": actual_amount,
+                    "payment_status": payment_status,
+                    "occurrence_time": (
+                        occurrence_time.isoformat() if occurrence_time else None
+                    ),
+                },
+            )
+        )
+        db.add(
+            AuditEvent(
+                case_id=case.id,
+                action_id=action.id,
+                event_type="RECOVERY_CASE_RECOVERED",
+                actor="webhook",
+                mode=case.mode,
+                payload={
+                    "recovered_payment_id": new_payment_id,
+                    "amount_recovered": actual_amount,
+                },
+            )
+        )
+
+        event_obj = await db.get(WebhookEvent, webhook_event_id)
+        if event_obj:
+            event_obj.processed = True
+            event_obj.processed_at = datetime.now(UTC)
+
+        await db.commit()
+        return 200, {
+            "status": "recovered",
+            "case_id": str(case.id),
+            "recovered_payment_id": new_payment_id,
+            "amount_recovered": actual_amount,
+        }
+
+    @staticmethod
+    async def _handle_payment_link_terminal(
+        db: AsyncSession,
+        webhook_event_id: Any,
+        event_id: str,
+        payload: dict[str, Any],
+        event_type: str,
+    ) -> tuple[int, dict[str, Any]]:
+        """Handle payment_link.expired and payment_link.cancelled webhooks.
+
+        Verified payload paths:
+        - payload.payment_link.entity.reference_id
+        - payload.payment_link.entity.id (plink_*)
+        - payload.payment_link.entity.status ("expired"/"cancelled")
+        Note: No payment entity in these events.
+        """
+        plink_entity = (
+            payload.get("payload", {})
+            .get("payment_link", {})
+            .get("entity", {})
+        )
+        reference_id = plink_entity.get("reference_id")
+        if not reference_id:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "no_reference_id"}
+
+        # Look up RecoveryAction
+        action_result = await db.execute(
+            select(RecoveryAction).where(
+                RecoveryAction.razorpay_link_reference_id == reference_id
+            )
+        )
+        action = action_result.scalar_one_or_none()
+
+        if action is None:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "unknown_reference_id"}
+
+        case = await db.get(RecoveryCase, action.case_id)
+        if case is None:
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "ignored", "reason": "case_not_found"}
+
+        # Guard: don't downgrade terminal states
+        if case.status in ("RECOVERED", "STOPPED", "ESCALATED"):
+            event_obj = await db.get(WebhookEvent, webhook_event_id)
+            if event_obj:
+                event_obj.processed = True
+                event_obj.processed_at = datetime.now(UTC)
+            await db.commit()
+            return 200, {"status": "already_terminal", "case_status": case.status}
+
+        # Determine outcome from event_type
+        is_expired = event_type == "payment_link.expired"
+        outcome = "EXPIRED" if is_expired else "CANCELLED"
+        stop_reason = (
+            "Payment link expired" if is_expired else "Payment link cancelled"
+        )
+        audit_event_type = (
+            "PAYMENT_LINK_EXPIRED" if is_expired else "PAYMENT_LINK_CANCELLED"
+        )
+
+        action.outcome = outcome
+        action.outcome_observed_at = datetime.now(UTC)
+        case.status = "STOPPED"
+        case.stop_reason = stop_reason
+        case.resolved_at = datetime.now(UTC)
+
+        db.add(
+            AuditEvent(
+                case_id=case.id,
+                action_id=action.id,
+                event_type=audit_event_type,
+                actor="webhook",
+                mode=case.mode,
+                payload={
+                    "plink_id": plink_entity.get("id"),
+                    "reference_id": reference_id,
+                    "link_status": plink_entity.get("status"),
+                },
+            )
+        )
+
+        event_obj = await db.get(WebhookEvent, webhook_event_id)
+        if event_obj:
+            event_obj.processed = True
+            event_obj.processed_at = datetime.now(UTC)
+
+        await db.commit()
+        return 200, {
+            "status": "stopped",
+            "case_id": str(case.id),
+            "outcome": outcome,
         }
