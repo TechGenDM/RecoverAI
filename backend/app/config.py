@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=120)
     SCHEDULER_BATCH_SIZE: int = Field(default=10, ge=1, le=100)
 
+    # M3 Executor Configuration
+    RAZORPAY_BASE_URL: str = "https://api.razorpay.com"
+    EXECUTOR_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=120)
+    PAYMENT_LINK_MIN_VALIDITY_MINUTES: int = Field(default=15, ge=5, le=60)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
