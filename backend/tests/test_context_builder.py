@@ -1,4 +1,3 @@
-
 import pytest
 
 from app.models import RecoveryCase
@@ -9,9 +8,12 @@ from app.services.context_builder import build_recovery_context
 async def test_build_recovery_context(db_session, setup_test_data):
     # Retrieve the case from DB
     from sqlalchemy import select
-    case = (await db_session.execute(
-        select(RecoveryCase).where(RecoveryCase.status == "CREATED").limit(1)
-    )).scalar_one()
+
+    case = (
+        await db_session.execute(
+            select(RecoveryCase).where(RecoveryCase.status == "CREATED").limit(1)
+        )
+    ).scalar_one()
 
     context = await build_recovery_context(db_session, case)
 
