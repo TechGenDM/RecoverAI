@@ -28,7 +28,7 @@ async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
 
     # 3. Safety validation
     safety_result = validate_decision(decision_schema, context)
-    
+
     # 4. Compute heuristic likelihood deterministically
     heuristic = compute_heuristic_likelihood(context.payment.error_reason)
 
@@ -49,7 +49,7 @@ async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
         policy_verdict=safety_result.policy_verdict,
         effective_action=safety_result.effective_action,
         policy_reason=safety_result.policy_reason,
-        policy_modification_detail=safety_result.policy_modification_detail
+        policy_modification_detail=safety_result.policy_modification_detail,
     )
     session.add(decision)
 
@@ -67,7 +67,10 @@ async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
         # We'll use SQLAlchemy func.now() or python datetime
         # Import datetime UTC if needed, but we can just use python runtime datetime
         from datetime import UTC, datetime, timedelta
-        case.due_at = datetime.now(UTC) + timedelta(hours=safety_result.delay_hours or 1.0)
+
+        case.due_at = datetime.now(UTC) + timedelta(
+            hours=safety_result.delay_hours or 1.0
+        )
     elif safety_result.effective_action == "SEND_PAYMENT_LINK":
         # Case remains in ANALYSING so M3 can pick it up via JOIN on recovery_actions
         case.status = "ANALYSING"
@@ -85,7 +88,7 @@ async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
             "new_status": case.status,
             "latency_ms": latency_ms,
             "llm_provider": settings.LLM_PROVIDER,
-            "policy_verdict": safety_result.policy_verdict
-        }
+            "policy_verdict": safety_result.policy_verdict,
+        },
     )
     session.add(audit)

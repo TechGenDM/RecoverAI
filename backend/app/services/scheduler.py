@@ -14,46 +14,40 @@ from .analysis_service import analyze_and_decide
 
 logger = logging.getLogger(__name__)
 
+
 async def claim_batch(session: AsyncSession, batch_size: int) -> list[str]:
     """
     Phase 1: Claim cases for processing using FOR UPDATE SKIP LOCKED.
     Returns list of claimed case IDs.
     """
     now = datetime.now(UTC)
-    
+
     # Target CREATED cases, or WAITING cases whose due_at has passed
     stmt = (
         select(RecoveryCase.id)
         .where(
             or_(
                 RecoveryCase.status == "CREATED",
-                and_(
-                    RecoveryCase.status == "WAITING",
-                    RecoveryCase.due_at <= now
-                )
+                and_(RecoveryCase.status == "WAITING", RecoveryCase.due_at <= now),
             )
         )
         .order_by(RecoveryCase.created_at.asc())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
     )
-    
+
     case_ids = (await session.execute(stmt)).scalars().all()
     if not case_ids:
         return []
-        
+
     # Mark them as ANALYSING
     update_stmt = (
         update(RecoveryCase)
         .where(RecoveryCase.id.in_(case_ids))
-        .values(
-            status="ANALYSING",
-            due_at=None,
-            updated_at=func.now()
-        )
+        .values(status="ANALYSING", due_at=None, updated_at=func.now())
     )
     await session.execute(update_stmt)
-    
+
     # Audit log the claim
     for cid in case_ids:
         audit = AuditEvent(
@@ -61,12 +55,13 @@ async def claim_batch(session: AsyncSession, batch_size: int) -> list[str]:
             event_type="SCHEDULER_CLAIMED",
             actor="system",
             mode="LIVE",
-            payload={"description": "Scheduler claimed case for LLM analysis"}
+            payload={"description": "Scheduler claimed case for LLM analysis"},
         )
         session.add(audit)
-        
+
     await session.commit()
     return [str(cid) for cid in case_ids]
+
 
 async def process_case(case_id: str) -> None:
     """
@@ -83,15 +78,17 @@ async def process_case(case_id: str) -> None:
                 .where(RecoveryCase.id == case_id)
             )
             case = (await session.execute(stmt)).scalar_one_or_none()
-            
+
             if not case:
                 logger.error(f"Case {case_id} not found during processing")
                 return
-                
+
             if case.status != "ANALYSING":
-                logger.warning(f"Case {case_id} is no longer in ANALYSING state (stale claim)")
+                logger.warning(
+                    f"Case {case_id} is no longer in ANALYSING state (stale claim)"
+                )
                 return
-                
+
             # 2. Analyze (includes LLM call and safety validation)
             try:
                 await analyze_and_decide(session, case)
@@ -105,14 +102,15 @@ async def process_case(case_id: str) -> None:
                     event_type="ANALYSIS_FAILED",
                     actor="system",
                     mode=case.mode,
-                    payload={"error": str(e)}
+                    payload={"error": str(e)},
                 )
                 session.add(audit)
-                
+
             # 3. Commit the decision and state transition
             await session.commit()
     except Exception:
         logger.exception(f"Fatal error processing case {case_id}")
+
 
 async def run_analysis_phase() -> int:
     """M2: Claim and analyze cases via LLM.
