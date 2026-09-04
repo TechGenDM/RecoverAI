@@ -69,9 +69,7 @@ class LiveRecoveryExecutor(RecoveryExecutor):
                 error=str(exc),
             )
         except RazorpayAPIError as exc:
-            logger.error(
-                "Razorpay API error for %s: %s", reference_id, exc
-            )
+            logger.error("Razorpay API error for %s: %s", reference_id, exc)
             return ExecutionResult(
                 definite_failure=True,
                 reference_id=reference_id,

@@ -518,9 +518,7 @@ class WebhookIngestionService:
         """
         # Extract payment_link entity
         plink_entity = (
-            payload.get("payload", {})
-            .get("payment_link", {})
-            .get("entity", {})
+            payload.get("payload", {}).get("payment_link", {}).get("entity", {})
         )
         reference_id = plink_entity.get("reference_id")
         if not reference_id:
@@ -532,11 +530,7 @@ class WebhookIngestionService:
             return 200, {"status": "ignored", "reason": "no_reference_id"}
 
         # Extract payment entity
-        payment_entity = (
-            payload.get("payload", {})
-            .get("payment", {})
-            .get("entity", {})
-        )
+        payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
         new_payment_id = payment_entity.get("id")
         actual_amount = payment_entity.get("amount")
         payment_status = payment_entity.get("status")
@@ -546,7 +540,9 @@ class WebhookIngestionService:
             event_obj = await db.get(WebhookEvent, webhook_event_id)
             if event_obj:
                 event_obj.processed = True
-                event_obj.processing_error = "Invalid payment entity in payment_link.paid"
+                event_obj.processing_error = (
+                    "Invalid payment entity in payment_link.paid"
+                )
                 event_obj.processed_at = datetime.now(UTC)
             await db.commit()
             return 400, {"error": "invalid_payment_entity"}
@@ -777,9 +773,7 @@ class WebhookIngestionService:
         Note: No payment entity in these events.
         """
         plink_entity = (
-            payload.get("payload", {})
-            .get("payment_link", {})
-            .get("entity", {})
+            payload.get("payload", {}).get("payment_link", {}).get("entity", {})
         )
         reference_id = plink_entity.get("reference_id")
         if not reference_id:
@@ -827,9 +821,7 @@ class WebhookIngestionService:
         # Determine outcome from event_type
         is_expired = event_type == "payment_link.expired"
         outcome = "EXPIRED" if is_expired else "CANCELLED"
-        stop_reason = (
-            "Payment link expired" if is_expired else "Payment link cancelled"
-        )
+        stop_reason = "Payment link expired" if is_expired else "Payment link cancelled"
         audit_event_type = (
             "PAYMENT_LINK_EXPIRED" if is_expired else "PAYMENT_LINK_CANCELLED"
         )
