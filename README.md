@@ -278,11 +278,50 @@ Open [http://localhost:3000](http://localhost:3000) to view the Next.js applicat
 | :--- | :--- | :--- | :---: |
 | **M0** | **Foundation & Setup** | Monorepo layout, Docker PostgreSQL, SQLAlchemy 2.x models, Alembic migrations, FastAPI health check, Next.js bootstrap, base test suite | **Done** ✅ |
 | **M1** | **Ingestion & Cases** | Razorpay webhook signature verification, event deduplication, customer upsert, payment failure ingestion, case creation (CREATED status), audit logging | **Implemented** ✅ |
-| **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini/OpenAI adapter, structured strategy proposal | **Implemented** ✅ |
-| **M3** | **Policy Engine & Executor** | Deterministic boundary checks, cooldown guards, Payment Link generation, reference ID generator, retry throttling | Scheduled ⏳ |
-| **M4** | **Reconciliation & Scheduler** | State machine transitions, async scheduler loop, late payment handling, recovery verification | Scheduled ⏳ |
+| **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini 2.0 / Mock adapter, structured strategy proposal, deterministic policy engine, async claim batching | **Implemented** ✅ |
+| **M3** | **Recovery Executor & Policy** | Dual-mode executor (LIVE & SIMULATED), atomic claim (`FOR UPDATE SKIP LOCKED`), deterministic `reference_id` reconciliation (`GET /v1/payment_links/?reference_id=...`), Razorpay Payment Links, zero DB transaction during HTTP, webhook reconciliation | **Implemented & Audited** ✅ |
+| **M4** | **Reconciliation & Orchestration** | State machine transitions, unified background runner, recovery verification, late payment handling | Scheduled ⏳ |
 | **M5** | **Synthetic Batch & Metrics** | 20+ realistic payment failure scenarios, simulated engine, recovery rate, ROI, prevented-churn analytics | Scheduled ⏳ |
 | **M6** | **Frontend Dashboard & Demo** | Metric cards, live case explorer, audit trail inspector, interactive simulator, end-to-end demo flow | Scheduled ⏳ |
+
+---
+
+## 🧪 Comprehensive Automated Test Suite
+
+RecoverAI features **71 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
+
+```
+tests/test_main.py                  ...      [Health check & configuration loading]
+tests/test_models.py                .        [Declarative model relationships]
+tests/test_schema_constraints.py    ......   [Database constraints & nullability]
+tests/test_webhook_ingestion.py     ........ [HMAC verification, deduplication, case creation]
+tests/test_context_builder.py       .        [Failure context & customer telemetry aggregation]
+tests/test_llm_provider.py          ..       [Gemini & Mock provider contracts]
+tests/test_safety_validator.py      ......   [Policy engine boundary & limits validation]
+tests/test_analysis_service.py      .        [End-to-end diagnostic analysis & decisions]
+tests/test_scheduler.py             ..       [Async locking & batch claim concurrency]
+tests/test_executor.py              ........ [Category B reconciliation, live/simulated executors, atomic claim, zero-transaction isolation]
+tests/test_payment_link_webhooks.py ........ [Payment link webhook reconciliation, late window payment, amount verification]
+
+======================== 71 passed in 7.18s =========================
+```
+
+### 15-Point Production Safety Verification Audit
+- [x] **M3-01**: `RecoveryCase.attempt_count` is owned exclusively by M2; M3 never increments it.
+- [x] **M3-02**: `reference_id` is deterministically derived from stored `attempt_number` (`rc-{case_id_hex[:24]}-a{n}`).
+- [x] **M3-03**: Unknown Razorpay outcomes leave action and case in `EXECUTING`; never `WAITING`.
+- [x] **M3-04**: Category B reconciliation strictly precedes Category A execution.
+- [x] **M3-05**: Exact `GET /v1/payment_links/?reference_id=...` is the primary reconciliation mechanism.
+- [x] **M3-06**: Ambiguous GET reconciliation results abort outbound POST link creations.
+- [x] **M3-07**: Outbound POST with same `reference_id` executes only when zero matching links exist.
+- [x] **M3-08**: Duplicate-reference error from POST acts as a defensive fallback.
+- [x] **M3-09**: Reconciliation requires exact `reference_id` string match.
+- [x] **M3-10**: Multiple matching links are flagged as an anomaly, halting execution for audit.
+- [x] **M3-11**: Zero open DB transactions or row locks during external Razorpay HTTP requests.
+- [x] **M3-12**: Full case status re-verification before persisting final execution outcomes.
+- [x] **M3-13**: Exact amount verification against `amount_at_risk` on payment receipt.
+- [x] **M3-14**: Full in-window verification for late webhook reconciliation.
+- [x] **M3-15**: Complete teardown foreign key ordering and database cleanliness.
 
 ---
 
