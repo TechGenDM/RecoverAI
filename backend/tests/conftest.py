@@ -34,9 +34,9 @@ async def setup_test_data(db_session):
     
     from app.models import RecoveryAction
     # ensure clean slate
+    await db_session.execute(delete(AuditEvent))
     await db_session.execute(delete(RecoveryAction))
     await db_session.execute(delete(RecoveryDecision))
-    await db_session.execute(delete(AuditEvent))
     await db_session.execute(delete(RecoveryCase))
     await db_session.execute(delete(Payment))
     await db_session.execute(delete(Customer))
@@ -81,9 +81,9 @@ async def setup_test_data(db_session):
     yield
     
     # Teardown
+    await db_session.execute(delete(AuditEvent))
     await db_session.execute(delete(RecoveryAction))
     await db_session.execute(delete(RecoveryDecision))
-    await db_session.execute(delete(AuditEvent))
     await db_session.execute(delete(RecoveryCase))
     await db_session.execute(delete(Payment))
     await db_session.execute(delete(Customer))

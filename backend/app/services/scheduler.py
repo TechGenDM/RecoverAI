@@ -82,13 +82,6 @@ async def process_case(case_id: str) -> None:
                 )
                 .where(RecoveryCase.id == case_id)
             )
-            stmt = (
-                select(RecoveryCase)
-                .options(
-                    selectinload(RecoveryCase.payment).selectinload(Payment.customer)
-                )
-                .where(RecoveryCase.id == case_id)
-            )
             case = (await session.execute(stmt)).scalar_one_or_none()
             
             if not case:
@@ -121,20 +114,51 @@ async def process_case(case_id: str) -> None:
     except Exception:
         logger.exception(f"Fatal error processing case {case_id}")
 
-async def run_scheduler_tick() -> int:
-    """
-    Main entrypoint for the scheduler tick (e.g. from cron/webhook).
+async def run_analysis_phase() -> int:
+    """M2: Claim and analyze cases via LLM.
+
     Returns number of cases processed.
     """
     async with AsyncSessionLocal() as session:
         case_ids = await claim_batch(session, settings.SCHEDULER_BATCH_SIZE)
-        
+
     if not case_ids:
         return 0
-        
-    # Process each case (can be concurrent, but we do sequentially or gather)
-    # We will use asyncio.gather for concurrency within the batch
+
     tasks = [process_case(cid) for cid in case_ids]
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     return len(case_ids)
+
+
+async def run_scheduler_tick() -> int:
+    """Main entrypoint for the scheduler tick.
+
+    Phase 1 (M2): Claim CREATED/WAITING cases → ANALYSING → LLM analysis.
+    Phase 2 (M3): Execute pending SEND_PAYMENT_LINK decisions.
+
+    Returns total number of actions processed.
+    """
+    # Avoid circular import; recovery_service depends on executor, not LLM
+    from app.services.recovery_service import run_execution_phase
+
+    # Phase 1: M2 Analysis
+    analysis_count = await run_analysis_phase()
+
+    # Phase 2: M3 Execution (logically separate)
+    execution_count = 0
+    try:
+        async with AsyncSessionLocal() as session:
+            execution_count = await run_execution_phase(session)
+    except Exception:
+        logger.exception("M3 execution phase failed")
+
+    total = analysis_count + execution_count
+    if total > 0:
+        logger.info(
+            "Scheduler tick: %d analysis + %d execution = %d total",
+            analysis_count,
+            execution_count,
+            total,
+        )
+    return total
