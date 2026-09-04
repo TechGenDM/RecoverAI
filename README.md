@@ -210,7 +210,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the Next.js applicat
 | :--- | :--- | :--- | :---: |
 | **M0** | **Foundation & Setup** | Monorepo layout, Docker PostgreSQL, SQLAlchemy 2.x models, Alembic migrations, FastAPI health check, Next.js bootstrap, base test suite | **Done** ✅ |
 | **M1** | **Ingestion & Cases** | Razorpay webhook signature verification, event deduplication, customer upsert, payment failure ingestion, case creation (CREATED status), audit logging | **Implemented** ✅ |
-| **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini/OpenAI adapter, structured strategy proposal | Scheduled ⏳ |
+| **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini/OpenAI adapter, structured strategy proposal | **Implemented** ✅ |
 | **M3** | **Policy Engine & Executor** | Deterministic boundary checks, cooldown guards, Payment Link generation, reference ID generator, retry throttling | Scheduled ⏳ |
 | **M4** | **Reconciliation & Scheduler** | State machine transitions, async scheduler loop, late payment handling, recovery verification | Scheduled ⏳ |
 | **M5** | **Synthetic Batch & Metrics** | 20+ realistic payment failure scenarios, simulated engine, recovery rate, ROI, prevented-churn analytics | Scheduled ⏳ |
