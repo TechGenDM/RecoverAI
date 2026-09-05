@@ -2,13 +2,14 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import engine, get_db
+from app.routers.dashboard import router as dashboard_router
 from app.routers.scheduler import router as scheduler_router
 from app.routers.webhooks import router as webhooks_router
-from app.routers.dashboard import router as dashboard_router
 
 
 @asynccontextmanager
@@ -24,6 +25,14 @@ app = FastAPI(
     description="AI Revenue Recovery Backend",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount webhooks router with v1 prefix and root alias

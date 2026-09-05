@@ -61,7 +61,7 @@ async def build_recovery_context(
     avg_amt, days_since = None, None
     repeated_fails = 0
     success_rate = None
-    
+
     if customer:
         hist_stmt = select(
             func.count(Payment.id).label("total"),
@@ -83,7 +83,9 @@ async def build_recovery_context(
         total = hist_res.total if hist_res and hist_res.total else 0
         succ = hist_res.success_count if hist_res and hist_res.success_count else 0
         fail = hist_res.failed_count if hist_res and hist_res.failed_count else 0
-        avg_amt = float(hist_res.avg_amount) if hist_res and hist_res.avg_amount else None
+        avg_amt = (
+            float(hist_res.avg_amount) if hist_res and hist_res.avg_amount else None
+        )
 
         success_rate = (succ / total) if total > 0 else None
 
@@ -135,7 +137,7 @@ async def build_recovery_context(
     )
 
     # 6. Time Context
-    # Expiry is 72 hours from payment creation
+    # Recovery window is configuration-driven: settings.RECOVERY_MAX_WINDOW_HOURS
     window_hours = settings.RECOVERY_MAX_WINDOW_HOURS
     expiry_time = payment.created_at.timestamp() + (window_hours * 3600)
 
@@ -151,10 +153,10 @@ async def build_recovery_context(
         window_expired=(hours_rem <= 0),
     )
 
-    # 7. Capabilities
+    # 7. Capabilities — V1 rule: has_email OR has_phone
     can_generate_payment_link = False
     if customer:
-        can_generate_payment_link = bool(customer.email or hasattr(customer, 'contact') and customer.contact or customer.phone)
+        can_generate_payment_link = bool(customer.email or customer.phone)
 
     return RecoveryContext(
         case_id=str(case.id),

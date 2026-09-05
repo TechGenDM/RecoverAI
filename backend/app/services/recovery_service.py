@@ -120,13 +120,15 @@ async def claim_for_execution(
     session: AsyncSession,
     decision: RecoveryDecision,
     case: RecoveryCase,
+    now: datetime | None = None,
 ) -> RecoveryAction | None:
     """Atomically create a RecoveryAction and transition case to EXECUTING.
 
     Returns the created RecoveryAction, or None if the case should be skipped
     (e.g. insufficient time remaining).
     """
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
     min_validity = timedelta(minutes=settings.PAYMENT_LINK_MIN_VALIDITY_MINUTES)
 
     reference_id = _generate_reference_id(case.id, case.attempt_count)
@@ -205,13 +207,15 @@ async def _persist_execution_result(
     case_id: uuid.UUID,
     result: ExecutionResult,
     mode: str,
+    now: datetime | None = None,
 ) -> None:
     """Persist the execution result with terminal-state protection.
 
     Re-reads the case with FOR UPDATE to prevent overwriting RECOVERED.
     M3 may only perform EXECUTING → LINK_SENT.
     """
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
 
     # Re-read with lock to protect against webhook race
     case = await session.get(RecoveryCase, case_id, with_for_update=True)
@@ -336,6 +340,7 @@ async def _reconcile_action(
     session: AsyncSession,
     action: RecoveryAction,
     case: RecoveryCase,
+    now: datetime | None = None,
 ) -> None:
     """Reconcile an EXECUTING action with unknown outcome.
 
@@ -380,7 +385,7 @@ async def _reconcile_action(
                 action.failure_reason = f"Reconciliation failed: {result.error}"
                 case.status = "STOPPED"
                 case.stop_reason = f"Payment link not found: {result.error}"
-                case.resolved_at = datetime.now(UTC)
+                case.resolved_at = now if now else datetime.now(UTC)
                 session.add(
                     AuditEvent(
                         case_id=case.id,
@@ -393,10 +398,9 @@ async def _reconcile_action(
                 )
             return
 
-        # Success — persist and transition
         async with session.begin():
             await _persist_execution_result(
-                session, action.id, case.id, result, case.mode
+                session, action.id, case.id, result, case.mode, now=now
             )
         return
 
@@ -434,7 +438,7 @@ async def _reconcile_action(
         )
         async with session.begin():
             await _persist_execution_result(
-                session, action.id, case.id, exact_matches[0], case.mode
+                session, action.id, case.id, exact_matches[0], case.mode, now=now
             )
             session.add(
                 AuditEvent(
@@ -469,7 +473,7 @@ async def _reconcile_action(
             case.stop_reason = (
                 f"Multiple payment links found for reference_id {reference_id}"
             )
-            case.resolved_at = datetime.now(UTC)
+            case.resolved_at = now if now else datetime.now(UTC)
             session.add(
                 AuditEvent(
                     case_id=case.id,
@@ -492,7 +496,7 @@ async def _reconcile_action(
     )
     async with session.begin():
         customer_block = await _load_customer_block(session, case)
-    expire_by = _compute_expire_by(case)
+    expire_by = _compute_expire_by(case, now=now)
 
     if expire_by is None:
         async with session.begin():
@@ -502,7 +506,7 @@ async def _reconcile_action(
             action.failure_reason = "INSUFFICIENT_TIME_ON_RECONCILIATION"
             case.status = "STOPPED"
             case.stop_reason = "Insufficient recovery window on reconciliation"
-            case.resolved_at = datetime.now(UTC)
+            case.resolved_at = now if now else datetime.now(UTC)
             session.add(
                 AuditEvent(
                     case_id=case.id,
@@ -556,18 +560,21 @@ async def _reconcile_action(
             return
 
     async with session.begin():
-        await _persist_execution_result(session, action.id, case.id, result, case.mode)
+        await _persist_execution_result(
+            session, action.id, case.id, result, case.mode, now=now
+        )
 
 
 async def _execute_new_decision(
     session: AsyncSession,
     decision: RecoveryDecision,
     case: RecoveryCase,
+    now: datetime | None = None,
 ) -> None:
     """Execute a newly claimed SEND_PAYMENT_LINK decision."""
     # Phase 1: Atomic claim (inside caller's transaction)
     async with session.begin_nested():
-        action = await claim_for_execution(session, decision, case)
+        action = await claim_for_execution(session, decision, case, now=now)
         if action is None:
             return  # Skipped (insufficient time)
         await session.flush()  # Ensure action.id is populated
@@ -593,7 +600,7 @@ async def _execute_new_decision(
             return
 
         customer_block = await _load_customer_block(session, case)
-        expire_by = _compute_expire_by(case)
+        expire_by = _compute_expire_by(case, now=now)
 
     if expire_by is None:
         async with session.begin():
@@ -605,7 +612,7 @@ async def _execute_new_decision(
                 if case.status == "EXECUTING":
                     case.status = "STOPPED"
                     case.stop_reason = "Recovery window expired before execution"
-                    case.resolved_at = datetime.now(UTC)
+                    case.resolved_at = now if now else datetime.now(UTC)
                 session.add(
                     AuditEvent(
                         case_id=case_id,
@@ -642,15 +649,18 @@ async def _execute_new_decision(
 
     # Phase 3: Persist result (with terminal-state protection)
     async with session.begin():
-        await _persist_execution_result(session, action_id, case_id, result, case_mode)
+        await _persist_execution_result(
+            session, action_id, case_id, result, case_mode, now=now
+        )
 
 
-def _compute_expire_by(case: RecoveryCase) -> int | None:
+def _compute_expire_by(case: RecoveryCase, now: datetime | None = None) -> int | None:
     """Compute the expire_by Unix timestamp for a Payment Link.
 
     Returns None if insufficient time remains.
     """
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
     min_validity = timedelta(minutes=settings.PAYMENT_LINK_MIN_VALIDITY_MINUTES)
 
     if case.recovery_window_expires_at <= now + min_validity:
@@ -671,7 +681,9 @@ async def _load_customer_block(
     return _build_customer_block(customer)
 
 
-async def run_execution_phase(session: AsyncSession) -> int:
+async def run_execution_phase(
+    session: AsyncSession, now: datetime | None = None
+) -> int:
     """M3 scheduler entrypoint.
 
     Processes Category B (reconciliation) first, then Category A (new execution).
@@ -689,7 +701,7 @@ async def run_execution_phase(session: AsyncSession) -> int:
 
     for action, case in reconciliation_targets:
         try:
-            await _reconcile_action(session, action, case)
+            await _reconcile_action(session, action, case, now=now)
             processed += 1
         except Exception:
             logger.exception(
@@ -708,7 +720,7 @@ async def run_execution_phase(session: AsyncSession) -> int:
 
     for decision, case in new_targets:
         try:
-            await _execute_new_decision(session, decision, case)
+            await _execute_new_decision(session, decision, case, now=now)
             processed += 1
         except Exception:
             logger.exception(

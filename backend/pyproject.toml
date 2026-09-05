@@ -34,3 +34,8 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.5",
 ]
+
+[tool.ruff.lint]
+extend-select = ["I", "B"]
+ignore = ["B008"]
+

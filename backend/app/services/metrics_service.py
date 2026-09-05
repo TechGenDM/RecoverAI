@@ -1,11 +1,13 @@
-from sqlalchemy import select, func, case, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
 
-from app.models import RecoveryCase, RecoveryAction, RecoveryDecision
+from app.models import RecoveryAction, RecoveryCase, RecoveryDecision
 from app.schemas.dashboard import DashboardMetrics
 
-async def get_dashboard_metrics(session: AsyncSession, mode: Optional[str] = None) -> DashboardMetrics:
+
+async def get_dashboard_metrics(
+    session: AsyncSession, mode: str | None = None
+) -> DashboardMetrics:
     # 1. Case-Level Funnel Metrics
     case_filters = []
     if mode and mode != "ALL":
@@ -15,9 +17,15 @@ async def get_dashboard_metrics(session: AsyncSession, mode: Optional[str] = Non
         func.count(RecoveryCase.id).label("total_cases"),
         func.sum(RecoveryCase.amount_at_risk).label("amount_at_risk_paise"),
         func.sum(RecoveryCase.amount_recovered).label("amount_recovered_paise"),
-        func.sum(case((RecoveryCase.status == 'RECOVERED', 1), else_=0)).label("recovered_cases"),
-        func.sum(case((RecoveryCase.status == 'STOPPED', 1), else_=0)).label("stopped_cases"),
-        func.sum(case((RecoveryCase.status == 'ESCALATED', 1), else_=0)).label("escalated_cases"),
+        func.sum(case((RecoveryCase.status == "RECOVERED", 1), else_=0)).label(
+            "recovered_cases"
+        ),
+        func.sum(case((RecoveryCase.status == "STOPPED", 1), else_=0)).label(
+            "stopped_cases"
+        ),
+        func.sum(case((RecoveryCase.status == "ESCALATED", 1), else_=0)).label(
+            "escalated_cases"
+        ),
     ).where(*case_filters)
 
     case_res = (await session.execute(case_stmt)).first()
@@ -29,8 +37,12 @@ async def get_dashboard_metrics(session: AsyncSession, mode: Optional[str] = Non
     stopped_cases = case_res.stopped_cases or 0
     escalated_cases = case_res.escalated_cases or 0
 
-    recovery_rate_by_count = (recovered_cases / total_cases) if total_cases > 0 else None
-    recovery_rate_by_amount = (amount_recovered / amount_at_risk) if amount_at_risk > 0 else None
+    recovery_rate_by_count = (
+        (recovered_cases / total_cases) if total_cases > 0 else None
+    )
+    recovery_rate_by_amount = (
+        (amount_recovered / amount_at_risk) if amount_at_risk > 0 else None
+    )
 
     # 2. Case-Level Final Interventions (Latest Decision per case)
     # Get the latest decision per case using DISTINCT ON in PostgreSQL or a subquery.
@@ -65,42 +77,86 @@ async def get_dashboard_metrics(session: AsyncSession, mode: Optional[str] = Non
         decision_filters.append(RecoveryCase.mode == mode)
 
     # Action metrics
-    action_stmt = select(
-        func.sum(case((
-            (RecoveryAction.action_type == 'SEND_PAYMENT_LINK') & 
-            (RecoveryAction.status == 'SUCCESS') & 
-            (RecoveryAction.razorpay_link_id.is_not(None)), 1
-        ), else_=0)).label("links_created"),
-        func.sum(case((
-            (RecoveryAction.action_type == 'SEND_PAYMENT_LINK') & 
-            (RecoveryAction.outcome == 'RECOVERED'), 1
-        ), else_=0)).label("links_paid"),
-        func.sum(case((
-            (RecoveryAction.action_type == 'SEND_PAYMENT_LINK') & 
-            (RecoveryAction.outcome == 'EXPIRED'), 1
-        ), else_=0)).label("links_expired"),
-        func.sum(case((
-            (RecoveryAction.action_type == 'SEND_PAYMENT_LINK') & 
-            (RecoveryAction.outcome == 'CANCELLED'), 1
-        ), else_=0)).label("links_cancelled"),
-    ).select_from(RecoveryAction).join(RecoveryCase, RecoveryAction.case_id == RecoveryCase.id).where(*action_filters)
-    
+    action_stmt = (
+        select(
+            func.sum(
+                case(
+                    (
+                        (RecoveryAction.action_type == "SEND_PAYMENT_LINK")
+                        & (RecoveryAction.status == "SUCCESS")
+                        & (RecoveryAction.razorpay_link_id.is_not(None)),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("links_created"),
+            func.sum(
+                case(
+                    (
+                        (RecoveryAction.action_type == "SEND_PAYMENT_LINK")
+                        & (RecoveryAction.outcome == "RECOVERED"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("links_paid"),
+            func.sum(
+                case(
+                    (
+                        (RecoveryAction.action_type == "SEND_PAYMENT_LINK")
+                        & (RecoveryAction.outcome == "EXPIRED"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("links_expired"),
+            func.sum(
+                case(
+                    (
+                        (RecoveryAction.action_type == "SEND_PAYMENT_LINK")
+                        & (RecoveryAction.outcome == "CANCELLED"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("links_cancelled"),
+        )
+        .select_from(RecoveryAction)
+        .join(RecoveryCase, RecoveryAction.case_id == RecoveryCase.id)
+        .where(*action_filters)
+    )
+
     action_res = (await session.execute(action_stmt)).first()
 
     # Decision metrics
-    decision_stmt = select(
-        func.count(RecoveryDecision.id).label("total"),
-        func.sum(case((RecoveryDecision.effective_action == 'SEND_PAYMENT_LINK', 1), else_=0)).label("send_link"),
-        func.sum(case((RecoveryDecision.effective_action == 'WAIT', 1), else_=0)).label("wait"),
-        func.sum(case((RecoveryDecision.effective_action == 'ESCALATE', 1), else_=0)).label("escalate"),
-        func.sum(case((RecoveryDecision.effective_action == 'STOP', 1), else_=0)).label("stop"),
-    ).select_from(RecoveryDecision).join(RecoveryCase, RecoveryDecision.case_id == RecoveryCase.id).where(*decision_filters)
+    decision_stmt = (
+        select(
+            func.count(RecoveryDecision.id).label("total"),
+            func.sum(
+                case(
+                    (RecoveryDecision.effective_action == "SEND_PAYMENT_LINK", 1),
+                    else_=0,
+                )
+            ).label("send_link"),
+            func.sum(
+                case((RecoveryDecision.effective_action == "WAIT", 1), else_=0)
+            ).label("wait"),
+            func.sum(
+                case((RecoveryDecision.effective_action == "ESCALATE", 1), else_=0)
+            ).label("escalate"),
+            func.sum(
+                case((RecoveryDecision.effective_action == "STOP", 1), else_=0)
+            ).label("stop"),
+        )
+        .select_from(RecoveryDecision)
+        .join(RecoveryCase, RecoveryDecision.case_id == RecoveryCase.id)
+        .where(*decision_filters)
+    )
 
     decision_res = (await session.execute(decision_stmt)).first()
 
     return DashboardMetrics(
         mode=mode or "ALL",
-        
         total_cases=total_cases,
         amount_at_risk_paise=amount_at_risk,
         amount_recovered_paise=amount_recovered,
@@ -109,17 +165,22 @@ async def get_dashboard_metrics(session: AsyncSession, mode: Optional[str] = Non
         escalated_cases=escalated_cases,
         recovery_rate_by_count=recovery_rate_by_count,
         recovery_rate_by_amount=recovery_rate_by_amount,
-        
-        cases_intervened_link=interventions_res.link_count or 0 if interventions_res else 0,
-        cases_intervened_wait=interventions_res.wait_count or 0 if interventions_res else 0,
-        cases_intervened_escalate=interventions_res.escalate_count or 0 if interventions_res else 0,
-        cases_intervened_stop=interventions_res.stop_count or 0 if interventions_res else 0,
-        
+        cases_intervened_link=interventions_res.link_count or 0
+        if interventions_res
+        else 0,
+        cases_intervened_wait=interventions_res.wait_count or 0
+        if interventions_res
+        else 0,
+        cases_intervened_escalate=interventions_res.escalate_count or 0
+        if interventions_res
+        else 0,
+        cases_intervened_stop=interventions_res.stop_count or 0
+        if interventions_res
+        else 0,
         payment_links_created=action_res.links_created or 0 if action_res else 0,
         payment_links_paid=action_res.links_paid or 0 if action_res else 0,
         payment_links_expired=action_res.links_expired or 0 if action_res else 0,
         payment_links_cancelled=action_res.links_cancelled or 0 if action_res else 0,
-        
         decisions_total=decision_res.total or 0 if decision_res else 0,
         decisions_send_link=decision_res.send_link or 0 if decision_res else 0,
         decisions_wait=decision_res.wait or 0 if decision_res else 0,

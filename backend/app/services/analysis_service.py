@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +11,6 @@ from .llm import get_llm_provider
 from .safety_validator import compute_heuristic_likelihood, validate_decision
 
 
-from datetime import UTC, datetime, timedelta
-
 async def analyze_and_decide(
     session: AsyncSession, case: RecoveryCase, now: datetime | None = None
 ) -> None:
@@ -20,7 +19,7 @@ async def analyze_and_decide(
     Assumes caller holds necessary locks or owns the case.
     Does NOT commit the transaction (caller handles it).
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime
 
     if now is None:
         now = datetime.now(UTC)
@@ -72,9 +71,7 @@ async def analyze_and_decide(
         case.due_at = None
     elif safety_result.effective_action == "WAIT":
         case.status = "WAITING"
-        case.due_at = now + timedelta(
-            hours=safety_result.delay_hours or 1.0
-        )
+        case.due_at = now + timedelta(hours=safety_result.delay_hours or 1.0)
     elif safety_result.effective_action == "SEND_PAYMENT_LINK":
         # Case remains in ANALYSING so M3 can pick it up via JOIN on recovery_actions
         case.status = "ANALYSING"
