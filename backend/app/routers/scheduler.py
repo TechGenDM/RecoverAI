@@ -44,3 +44,33 @@ async def trigger_case_analysis(
         "case_id": str(case.id),
         "status": case.status,
     }
+
+
+@router.post("/cases/{case_id}/execute", status_code=200)
+async def trigger_case_execution(
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run M3 recovery execution strictly for a single case."""
+    stmt = (
+        select(RecoveryCase)
+        .options(selectinload(RecoveryCase.payment).selectinload(Payment.customer))
+        .where(RecoveryCase.id == case_id)
+    )
+    case = (await db.execute(stmt)).scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    from app.database import AsyncSessionLocal
+    from app.services.recovery_service import run_execution_phase
+
+    async with AsyncSessionLocal() as exec_session:
+        processed = await run_execution_phase(exec_session, case_id=case.id)
+
+    await db.refresh(case)
+
+    return {
+        "case_id": str(case.id),
+        "status": case.status,
+        "processed": processed,
+    }

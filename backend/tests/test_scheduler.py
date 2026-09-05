@@ -78,3 +78,20 @@ async def test_trigger_case_analysis_endpoint(db_session, setup_test_data):
     data = resp.json()
     assert data["case_id"] == str(case.id)
     assert data["status"] in ("ANALYSING", "WAITING", "ESCALATED", "STOPPED")
+
+
+@pytest.mark.asyncio
+async def test_trigger_case_execution_endpoint(db_session, setup_test_data):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    case = (await db_session.execute(select(RecoveryCase).limit(1))).scalar_one()
+
+    resp = client.post(f"/v1/scheduler/cases/{case.id}/execute")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["case_id"] == str(case.id)
+    assert "status" in data
+    assert "processed" in data
