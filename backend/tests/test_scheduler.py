@@ -55,3 +55,29 @@ async def test_run_scheduler_tick(db_session, setup_test_data):
     for case in cases:
         # If it was processed, it shouldn't be CREATED anymore
         assert case.status != "CREATED"
+
+
+@pytest.mark.asyncio
+async def test_trigger_case_analysis_endpoint(db_session, setup_test_data):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import update
+
+    from app.main import app
+
+    client = TestClient(app)
+
+    # Reset a case to CREATED
+    case = (
+        await db_session.execute(select(RecoveryCase).limit(1))
+    ).scalar_one()
+    await db_session.execute(
+        update(RecoveryCase).where(RecoveryCase.id == case.id).values(status="CREATED")
+    )
+    await db_session.commit()
+
+    resp = client.post(f"/v1/scheduler/cases/{case.id}/analyze")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["case_id"] == str(case.id)
+    assert data["status"] in ("ANALYSING", "WAITING", "ESCALATED", "STOPPED")
+
