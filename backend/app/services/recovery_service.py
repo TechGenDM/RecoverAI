@@ -69,10 +69,13 @@ def _build_customer_block(customer: Customer | None) -> dict[str, str] | None:
 
 async def discover_new_executions(
     session: AsyncSession,
+    case_id: uuid.UUID | str | None = None,
+    mode: str | None = None,
 ) -> list[tuple[RecoveryDecision, RecoveryCase]]:
     """Category A: Find SEND_PAYMENT_LINK decisions with no RecoveryAction.
 
     Returns (decision, case) pairs with FOR UPDATE SKIP LOCKED on cases.
+    Optionally scoped to a single case_id and/or execution mode (e.g. SIMULATED).
     """
     stmt = (
         select(RecoveryDecision, RecoveryCase)
@@ -85,8 +88,15 @@ async def discover_new_executions(
                 RecoveryAction.id.is_(None),
             )
         )
-        .with_for_update(of=RecoveryCase, skip_locked=True)
-        .limit(settings.SCHEDULER_BATCH_SIZE)
+    )
+    if case_id is not None:
+        cid = uuid.UUID(str(case_id)) if not isinstance(case_id, uuid.UUID) else case_id
+        stmt = stmt.where(RecoveryCase.id == cid)
+    if mode is not None:
+        stmt = stmt.where(RecoveryCase.mode == mode)
+
+    stmt = stmt.with_for_update(of=RecoveryCase, skip_locked=True).limit(
+        settings.SCHEDULER_BATCH_SIZE
     )
     result = await session.execute(stmt)
     return list(result.tuples().all())
@@ -94,10 +104,13 @@ async def discover_new_executions(
 
 async def discover_reconciliation_targets(
     session: AsyncSession,
+    case_id: uuid.UUID | str | None = None,
+    mode: str | None = None,
 ) -> list[tuple[RecoveryAction, RecoveryCase]]:
     """Category B: Find EXECUTING actions with unknown outcomes.
 
     Returns (action, case) pairs with FOR UPDATE SKIP LOCKED on cases.
+    Optionally scoped to a single case_id and/or execution mode (e.g. SIMULATED).
     """
     stmt = (
         select(RecoveryAction, RecoveryCase)
@@ -109,8 +122,15 @@ async def discover_reconciliation_targets(
                 RecoveryCase.status == "EXECUTING",
             )
         )
-        .with_for_update(of=RecoveryCase, skip_locked=True)
-        .limit(settings.SCHEDULER_BATCH_SIZE)
+    )
+    if case_id is not None:
+        cid = uuid.UUID(str(case_id)) if not isinstance(case_id, uuid.UUID) else case_id
+        stmt = stmt.where(RecoveryCase.id == cid)
+    if mode is not None:
+        stmt = stmt.where(RecoveryCase.mode == mode)
+
+    stmt = stmt.with_for_update(of=RecoveryCase, skip_locked=True).limit(
+        settings.SCHEDULER_BATCH_SIZE
     )
     result = await session.execute(stmt)
     return list(result.tuples().all())
@@ -682,11 +702,15 @@ async def _load_customer_block(
 
 
 async def run_execution_phase(
-    session: AsyncSession, now: datetime | None = None
+    session: AsyncSession,
+    now: datetime | None = None,
+    case_id: uuid.UUID | str | None = None,
+    mode: str | None = None,
 ) -> int:
     """M3 scheduler entrypoint.
 
     Processes Category B (reconciliation) first, then Category A (new execution).
+    Optionally scoped to a specific case_id and/or execution mode (e.g. SIMULATED).
     Returns total number of actions processed.
     """
     processed = 0
@@ -694,12 +718,23 @@ async def run_execution_phase(
     # Category B: Reconcile EXECUTING actions first
     try:
         async with session.begin():
-            reconciliation_targets = await discover_reconciliation_targets(session)
+            reconciliation_targets = await discover_reconciliation_targets(
+                session, case_id=case_id, mode=mode
+            )
     except Exception:
         logger.exception("Failed to discover reconciliation targets")
         reconciliation_targets = []
 
     for action, case in reconciliation_targets:
+        if mode is not None and case.mode != mode:
+            logger.warning(
+                "Skipping action %s for case %s: mode mismatch (%s != %s)",
+                action.id,
+                case.id,
+                case.mode,
+                mode,
+            )
+            continue
         try:
             await _reconcile_action(session, action, case, now=now)
             processed += 1
@@ -713,12 +748,23 @@ async def run_execution_phase(
     # Category A: Execute new decisions
     try:
         async with session.begin():
-            new_targets = await discover_new_executions(session)
+            new_targets = await discover_new_executions(
+                session, case_id=case_id, mode=mode
+            )
     except Exception:
         logger.exception("Failed to discover new executions")
         new_targets = []
 
     for decision, case in new_targets:
+        if mode is not None and case.mode != mode:
+            logger.warning(
+                "Skipping decision %s for case %s: mode mismatch (%s != %s)",
+                decision.id,
+                case.id,
+                case.mode,
+                mode,
+            )
+            continue
         try:
             await _execute_new_decision(session, decision, case, now=now)
             processed += 1

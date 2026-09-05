@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     EXECUTOR_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=120)
     PAYMENT_LINK_MIN_VALIDITY_MINUTES: int = Field(default=15, ge=5, le=60)
 
+    # CORS Configuration
+    CORS_ORIGINS: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        description="Comma-separated list of permitted origins for CORS",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

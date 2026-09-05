@@ -232,6 +232,12 @@ async def process_simulation_case(
     if not case:
         return
 
+    # Invariant: Simulation can only ever process SIMULATED cases
+    if case.mode != "SIMULATED":
+        raise ValueError(
+            f"process_simulation_case can only execute SIMULATED cases, got mode={case.mode}"
+        )
+
     if case.status in ["RECOVERED", "STOPPED", "ESCALATED"]:
         return  # Terminal
 
@@ -254,11 +260,12 @@ async def process_simulation_case(
             await session.rollback()
             raise
 
-    # M3 Execution Phase
+    # M3 Execution Phase — strictly scoped to this case_id and SIMULATED mode
     case = await session.get(RecoveryCase, case_id)
     if case.status in ("EXECUTING", "ANALYSING"):
-        # ANALYSING means M2 decided SEND_PAYMENT_LINK, so it's ready for M3 discovery
-        await run_execution_phase(session, now=SIM_EPOCH)
+        await run_execution_phase(
+            session, now=SIM_EPOCH, case_id=case.id, mode="SIMULATED"
+        )
 
     # Simulated Outcome Phase
     case = await session.get(RecoveryCase, case_id)

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import engine, get_db
 from app.routers.dashboard import router as dashboard_router
 from app.routers.scheduler import router as scheduler_router
@@ -27,9 +28,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+def _parse_cors_origins(raw: str) -> list[str]:
+    if not raw:
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins if origins else ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_parse_cors_origins(settings.CORS_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

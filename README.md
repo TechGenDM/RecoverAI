@@ -3,7 +3,7 @@
 <div align="center">
 
 ![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%204%20Complete-success?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-92%20Passing-brightgreen?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-93%20Passing-brightgreen?style=for-the-badge)
 ![Audit](https://img.shields.io/badge/Production%20Audit-Verified-blue?style=for-the-badge)
 ![Determinism](https://img.shields.io/badge/Determinism-SHA--256%20100%25-9cf?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi&logoColor=white)
@@ -14,7 +14,7 @@
 
 **An enterprise-grade, deterministic, bounded AI revenue-recovery agent designed for the Razorpay AI Revenue Recovery Buildathon.**
 
-[Architecture](./docs/architecture.md) • [Agent Contract](./docs/agent_contract.md) • [Demo Script](./docs/demo_script.md) • [Milestones](#-implementation-roadmap)
+[Architecture](./docs/architecture.md) • [Agent Contract](./docs/agent_contract.md) • [Deployment Guide](./docs/deployment.md) • [Demo Script](./docs/demo_script.md) • [Milestones](#-implementation-roadmap)
 
 </div>
 
@@ -288,6 +288,13 @@ Open [http://localhost:3000](http://localhost:3000) to view the RecoverAI Execut
   - M3 Recovery Actions & Reference IDs (`rc-{case_id_hex[:24]}-a{n}`).
   - Chronological audit event log with sanitized payload metadata.
 
+### 5. Production Deployment (Vercel → Railway)
+See the complete step-by-step setup in the [Production Deployment Guide](./docs/deployment.md).
+- **Backend on Railway**: Deploy `backend/` connected to Railway Managed PostgreSQL. Set `CORS_ORIGINS=https://your-app.vercel.app` (enforces explicit origins with credentials; never uses wildcard `*`).
+- **Frontend on Vercel**: Deploy `frontend/`. Configure `NEXT_PUBLIC_API_BASE_URL=https://your-backend.up.railway.app` (mandatory in production; fails fast and cleanly if omitted).
+
+---
+
 ## 🚦 Implementation Roadmap
 
 | Milestone | Scope | Deliverables | Status |
@@ -304,7 +311,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the RecoverAI Execut
 
 ## 🧪 Comprehensive Automated Test Suite
 
-RecoverAI features **92 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
+RecoverAI features **93 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
 
 ```
 tests/test_main.py                  ...      [Health check & configuration loading]
@@ -319,9 +326,9 @@ tests/test_scheduler.py             ..       [Async locking & batch claim concur
 tests/test_executor.py              ........ [Category B reconciliation, live/simulated executors, atomic claim, zero-transaction isolation]
 tests/test_payment_link_webhooks.py ........ [Payment link webhook reconciliation, late window payment, amount verification]
 tests/test_metrics.py               ......   [Recovery metrics, funnel counts, LIVE/SIMULATED isolation]
-tests/test_simulation.py            ............... [SHA-256 determinism, clock isolation, idempotency, heuristic model, fail-closed reconciliation, wall-clock independence]
+tests/test_simulation.py            ................ [SHA-256 determinism, clock isolation, idempotency, heuristic model, fail-closed reconciliation, wall-clock independence, execution isolation]
 
-======================== 92 passed in 51.02s =========================
+======================== 93 passed in 48.15s =========================
 ```
 
 ### 15-Point Production Safety Verification Audit

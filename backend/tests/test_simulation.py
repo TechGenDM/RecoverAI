@@ -2,7 +2,7 @@
 partial-run recovery, heuristic outcome model, and fail-closed reconciliation.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -701,3 +701,119 @@ async def test_wall_clock_independence(db_session):
     for action in actions:
         if action.executed_at:
             assert action.executed_at.year == 2024
+
+
+# ---------------------------------------------------------------------------
+# 16. Simulation execution isolation (Regression test)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_simulation_execution_isolation_never_touches_live(db_session):
+    """Prove running a simulation can NEVER execute a LIVE case or invoke RazorpayClient.
+
+    Setup:
+    - 1 LIVE eligible case in ANALYSING with a SEND_PAYMENT_LINK decision (ready for M3 execution).
+    - 1 SIMULATED eligible case processed via run_simulation.
+
+    Assertion:
+    - The SIMULATED case is processed and executed.
+    - The LIVE case remains untouched in its original state (ANALYSING, 0 actions).
+    """
+    from app.models import Customer
+
+    # 1. Create a LIVE case ready for M3 execution
+    live_cust = Customer(
+        email="live_customer@example.com",
+        phone="+919876543210",
+        name="Live Customer",
+    )
+    db_session.add(live_cust)
+    await db_session.flush()
+
+    live_pay = Payment(
+        razorpay_payment_id="pay_live_isolation_test_001",
+        customer_id=live_cust.id,
+        amount=500000,
+        currency="INR",
+        status="failed",
+        error_reason="payment_risk_check_failed",
+        error_source="gateway",
+        error_step="payment_authentication",
+        payload_snapshot={},
+        failed_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    )
+    db_session.add(live_pay)
+    await db_session.flush()
+
+    live_case = RecoveryCase(
+        original_payment_id=live_pay.razorpay_payment_id,
+        payment_fk=live_pay.id,
+        customer_id=live_cust.id,
+        amount_at_risk=500000,
+        status="ANALYSING",
+        mode="LIVE",
+        recovery_window_expires_at=datetime.now(UTC) + timedelta(hours=72),
+        attempt_count=1,
+    )
+    db_session.add(live_case)
+    await db_session.flush()
+
+    live_decision = RecoveryDecision(
+        case_id=live_case.id,
+        attempt_number=1,
+        recommended_action="SEND_PAYMENT_LINK",
+        effective_action="SEND_PAYMENT_LINK",
+        policy_verdict="APPROVED",
+        policy_reason="Policy passed",
+        reason="Test live decision",
+        risk_factors=[],
+        raw_llm_response={"action": "SEND_PAYMENT_LINK"},
+        llm_provider="mock",
+        llm_model="mock-model",
+        llm_latency_ms=10,
+        llm_confidence=0.95,
+        heuristic_recovery_likelihood=0.85,
+        delay_hours=0,
+    )
+    db_session.add(live_decision)
+    await db_session.commit()
+
+    # 2. Run simulation batch
+    sim_result = await run_simulation(db_session, seed=777, scenario_count=1)
+    assert sim_result["new_cases_processed"] == 1
+
+    # 3. Assert SIMULATED case progressed to terminal/link_sent
+    sim_case = (
+        (
+            await db_session.execute(
+                select(RecoveryCase).where(RecoveryCase.mode == "SIMULATED")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert sim_case is not None
+    assert sim_case.status in ("LINK_SENT", "RECOVERED", "STOPPED")
+
+    # 4. CRITICAL ASSERTION: The LIVE case remains COMPLETELY untouched!
+    live_case_after = await db_session.get(RecoveryCase, live_case.id)
+    assert live_case_after is not None
+    assert live_case_after.status == "ANALYSING"  # NOT EXECUTING, NOT LINK_SENT
+    assert live_case_after.mode == "LIVE"
+    assert live_case_after.amount_recovered == 0
+
+    # Assert no RecoveryAction was created for the LIVE case
+    live_actions = (
+        (
+            await db_session.execute(
+                select(RecoveryAction).where(RecoveryAction.case_id == live_case.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(live_actions) == 0, (
+        f"Expected 0 actions for LIVE case, found: {live_actions}"
+    )
