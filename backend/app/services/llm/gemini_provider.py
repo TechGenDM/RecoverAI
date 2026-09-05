@@ -17,11 +17,18 @@ class GeminiProvider(BaseLLMProvider):
             api_key=self.settings.GEMINI_API_KEY.get_secret_value()
         )
 
-    async def analyze_case(
-        self, context: RecoveryContext
-    ) -> tuple[RecoveryDecisionSchema, str]:
-        prompt = f"""
+    @staticmethod
+    def build_prompt(context: RecoveryContext) -> str:
+        return f"""
 You are an AI recovery agent. Analyze the following payment failure context and decide the best recovery action.
+
+Monetary Unit Convention:
+Razorpay amounts are stored in the smallest currency subunit.
+For INR, 100 paise = ₹1.
+amount_paise=50000 means ₹500.00 INR.
+Use amount_inr for human-readable reasoning.
+Never interpret amount_paise as rupees.
+
 Context:
 {context.model_dump_json(indent=2)}
 
@@ -33,6 +40,11 @@ Decide the best action from:
 
 Provide your reasoning, risk factors, and confidence level.
 """
+
+    async def analyze_case(
+        self, context: RecoveryContext
+    ) -> tuple[RecoveryDecisionSchema, str]:
+        prompt = self.build_prompt(context)
 
         response = await self.client.aio.models.generate_content(
             model=self.settings.LLM_MODEL,

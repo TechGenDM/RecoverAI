@@ -35,7 +35,7 @@ async def build_recovery_context(
     # 2. Base payment context
     payment_ctx = PaymentContext(
         payment_id=payment.razorpay_payment_id,
-        amount=payment.amount,
+        amount_paise=payment.amount,
         currency=payment.currency,
         method=payment.method,
         bank=payment.bank,
