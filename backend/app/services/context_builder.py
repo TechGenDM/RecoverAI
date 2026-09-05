@@ -18,9 +18,10 @@ from app.schemas import (
 
 
 async def build_recovery_context(
-    session: AsyncSession, case: RecoveryCase
+    session: AsyncSession, case: RecoveryCase, now: datetime | None = None
 ) -> RecoveryContext:
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
 
     # 1. Eagerly load relationships if not already loaded (though scheduler should ideally load them)
     if "payment" not in case.__dict__:
@@ -50,65 +51,53 @@ async def build_recovery_context(
 
     # 3. Customer context
     customer_ctx = CustomerContext(
-        has_email=bool(customer.email),
-        has_phone=bool(customer.phone),
+        has_email=bool(customer.email) if customer else False,
+        has_phone=bool(customer.phone) if customer else False,
         has_profile=False,  # M1 scope doesn't have profiles yet, extend later if needed
     )
 
     # 4. Historical Context (Only captured/failed)
-    # Exclude current payment from history
-    hist_stmt = select(
-        func.count(Payment.id).label("total"),
-        func.sum(sql_case((Payment.status == "captured", 1), else_=0)).label(
-            "success_count"
-        ),
-        func.sum(sql_case((Payment.status == "failed", 1), else_=0)).label(
-            "failed_count"
-        ),
-        func.avg(Payment.amount).label("avg_amount"),
-        func.max(Payment.created_at).label("last_payment_date"),
-    ).where(
-        Payment.customer_id == customer.id,
-        Payment.id != payment.id,
-        Payment.status.in_(["captured", "failed"]),
-    )
-    hist_res = (await session.execute(hist_stmt)).first()
-
-    total = hist_res.total if hist_res and hist_res.total else 0
-    succ = hist_res.success_count if hist_res and hist_res.success_count else 0
-    fail = hist_res.failed_count if hist_res and hist_res.failed_count else 0
-    avg_amt = float(hist_res.avg_amount) if hist_res and hist_res.avg_amount else None
-
-    success_rate = (succ / total) if total > 0 else None
-
-    # Calculate days since last payment
-    days_since = None
-    if hist_res and hist_res.last_payment_date:
-        days_since = (now - hist_res.last_payment_date).total_seconds() / 86400.0
-
-    # Repeated method failures: how many failed payments in last 7 days used same method?
-    repeated_stmt = select(func.count(Payment.id)).where(
-        Payment.customer_id == customer.id,
-        Payment.id != payment.id,
-        Payment.status == "failed",
-        Payment.method == payment.method,
-        Payment.created_at
-        >= (
-            now.timestamp() - 7 * 86400
-        ),  # Last 7 days roughly, though created_at is datetime
-    )
-    # wait, created_at is datetime. We need to do date math properly.
-    # We will fetch the actual records if needed, or just do simpler logic. Let's do it in memory for simplicity in M2 if not many, or via SQL.
-    # Actually, simpler:
+    total, succ, fail = 0, 0, 0
+    avg_amt, days_since = None, None
     repeated_fails = 0
-    if payment.method:
-        repeated_stmt = select(func.count(Payment.id)).where(
+    success_rate = None
+    
+    if customer:
+        hist_stmt = select(
+            func.count(Payment.id).label("total"),
+            func.sum(sql_case((Payment.status == "captured", 1), else_=0)).label(
+                "success_count"
+            ),
+            func.sum(sql_case((Payment.status == "failed", 1), else_=0)).label(
+                "failed_count"
+            ),
+            func.avg(Payment.amount).label("avg_amount"),
+            func.max(Payment.created_at).label("last_payment_date"),
+        ).where(
             Payment.customer_id == customer.id,
             Payment.id != payment.id,
-            Payment.status == "failed",
-            Payment.method == payment.method,
+            Payment.status.in_(["captured", "failed"]),
         )
-        repeated_fails = (await session.execute(repeated_stmt)).scalar() or 0
+        hist_res = (await session.execute(hist_stmt)).first()
+
+        total = hist_res.total if hist_res and hist_res.total else 0
+        succ = hist_res.success_count if hist_res and hist_res.success_count else 0
+        fail = hist_res.failed_count if hist_res and hist_res.failed_count else 0
+        avg_amt = float(hist_res.avg_amount) if hist_res and hist_res.avg_amount else None
+
+        success_rate = (succ / total) if total > 0 else None
+
+        if hist_res and hist_res.last_payment_date:
+            days_since = (now - hist_res.last_payment_date).total_seconds() / 86400.0
+
+        if payment.method:
+            repeated_stmt = select(func.count(Payment.id)).where(
+                Payment.customer_id == customer.id,
+                Payment.id != payment.id,
+                Payment.status == "failed",
+                Payment.method == payment.method,
+            )
+            repeated_fails = (await session.execute(repeated_stmt)).scalar() or 0
 
     historical_ctx = HistoricalContext(
         total_payments=total,
@@ -163,7 +152,9 @@ async def build_recovery_context(
     )
 
     # 7. Capabilities
-    can_generate_payment_link = bool(customer.email or customer.contact)
+    can_generate_payment_link = False
+    if customer:
+        can_generate_payment_link = bool(customer.email or hasattr(customer, 'contact') and customer.contact or customer.phone)
 
     return RecoveryContext(
         case_id=str(case.id),

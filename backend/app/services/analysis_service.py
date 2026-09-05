@@ -10,16 +10,25 @@ from .llm import get_llm_provider
 from .safety_validator import compute_heuristic_likelihood, validate_decision
 
 
-async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
+from datetime import UTC, datetime, timedelta
+
+async def analyze_and_decide(
+    session: AsyncSession, case: RecoveryCase, now: datetime | None = None
+) -> None:
     """
     Core M2 orchestration logic for a single case.
     Assumes caller holds necessary locks or owns the case.
     Does NOT commit the transaction (caller handles it).
     """
+    from datetime import UTC, datetime, timedelta
+
+    if now is None:
+        now = datetime.now(UTC)
+
     llm = get_llm_provider()
 
     # 1. Build deterministic context
-    context = await build_recovery_context(session, case)
+    context = await build_recovery_context(session, case, now=now)
 
     # 2. Call LLM
     start_time = time.monotonic()
@@ -63,12 +72,7 @@ async def analyze_and_decide(session: AsyncSession, case: RecoveryCase) -> None:
         case.due_at = None
     elif safety_result.effective_action == "WAIT":
         case.status = "WAITING"
-        # Using context evaluation_time string is not ideal for DB datetime insertion directly if naive
-        # We'll use SQLAlchemy func.now() or python datetime
-        # Import datetime UTC if needed, but we can just use python runtime datetime
-        from datetime import UTC, datetime, timedelta
-
-        case.due_at = datetime.now(UTC) + timedelta(
+        case.due_at = now + timedelta(
             hours=safety_result.delay_hours or 1.0
         )
     elif safety_result.effective_action == "SEND_PAYMENT_LINK":
