@@ -1,8 +1,19 @@
-from sqlalchemy import case, func, select, text
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import RecoveryAction, RecoveryCase, RecoveryDecision
-from app.schemas.dashboard import DashboardMetrics
+from app.models import Payment, RecoveryAction, RecoveryCase, RecoveryDecision
+from app.schemas.dashboard import DashboardMetrics, FailureReasonMetrics
+
+VALID_STATUSES = [
+    "CREATED",
+    "ANALYSING",
+    "WAITING",
+    "EXECUTING",
+    "LINK_SENT",
+    "RECOVERED",
+    "STOPPED",
+    "ESCALATED",
+]
 
 
 async def get_dashboard_metrics(
@@ -44,30 +55,103 @@ async def get_dashboard_metrics(
         (amount_recovered / amount_at_risk) if amount_at_risk > 0 else None
     )
 
-    # 2. Case-Level Final Interventions (Latest Decision per case)
-    # Get the latest decision per case using DISTINCT ON in PostgreSQL or a subquery.
-    # We'll use a subquery with ROW_NUMBER()
-    mode_filter = ""
-    if mode and mode != "ALL":
-        mode_filter = f"WHERE rc.mode = '{mode}'"
-
-    intervention_sql = f"""
-    WITH latest_decisions AS (
-        SELECT rd.effective_action,
-               ROW_NUMBER() OVER(PARTITION BY rd.case_id ORDER BY rd.attempt_number DESC, rd.created_at DESC, rd.id DESC) as rn
-        FROM recovery_decisions rd
-        JOIN recovery_cases rc ON rd.case_id = rc.id
-        {mode_filter}
+    # 1b. Case Status Distribution (all 8 statuses guaranteed present)
+    status_map = {s: 0 for s in VALID_STATUSES}
+    status_stmt = (
+        select(RecoveryCase.status, func.count(RecoveryCase.id))
+        .where(*case_filters)
+        .group_by(RecoveryCase.status)
     )
-    SELECT 
-        SUM(CASE WHEN effective_action = 'SEND_PAYMENT_LINK' THEN 1 ELSE 0 END) as link_count,
-        SUM(CASE WHEN effective_action = 'WAIT' THEN 1 ELSE 0 END) as wait_count,
-        SUM(CASE WHEN effective_action = 'ESCALATE' THEN 1 ELSE 0 END) as escalate_count,
-        SUM(CASE WHEN effective_action = 'STOP' THEN 1 ELSE 0 END) as stop_count
-    FROM latest_decisions
-    WHERE rn = 1
-    """
-    interventions_res = (await session.execute(text(intervention_sql))).first()
+    status_rows = (await session.execute(status_stmt)).all()
+    for st, cnt in status_rows:
+        if st in status_map:
+            status_map[st] = cnt
+
+    # 1c. Breakdown by Original Payment Failure Reason
+    subq = (
+        select(
+            RecoveryCase.id,
+            RecoveryCase.status,
+            RecoveryCase.amount_at_risk,
+            RecoveryCase.amount_recovered,
+            func.coalesce(Payment.error_reason, "UNKNOWN").label("reason"),
+        )
+        .select_from(RecoveryCase)
+        .join(Payment, RecoveryCase.payment_fk == Payment.id)
+        .where(*case_filters)
+        .subquery()
+    )
+    failure_stmt = select(
+        subq.c.reason,
+        func.count(subq.c.id).label("total"),
+        func.sum(case((subq.c.status == "RECOVERED", 1), else_=0)).label("recovered"),
+        func.sum(subq.c.amount_at_risk).label("at_risk"),
+        func.sum(subq.c.amount_recovered).label("recovered_amount"),
+    ).group_by(subq.c.reason)
+    failure_rows = (await session.execute(failure_stmt)).all()
+
+    failure_reason_map: dict[str, FailureReasonMetrics] = {}
+    for row in failure_rows:
+        tot = row.total or 0
+        rec = row.recovered or 0
+        failure_reason_map[row.reason] = FailureReasonMetrics(
+            total_cases=tot,
+            recovered_cases=rec,
+            recovery_rate_by_count=(rec / tot) if tot > 0 else None,
+            amount_at_risk_paise=row.at_risk or 0,
+            amount_recovered_paise=row.recovered_amount or 0,
+        )
+
+    # 2. Case-Level Final Interventions (Latest Decision per case)
+    # Pure SQLAlchemy window function & subquery — no raw SQL string, fully parameterized
+    rn_col = (
+        func.row_number()
+        .over(
+            partition_by=RecoveryDecision.case_id,
+            order_by=[
+                RecoveryDecision.attempt_number.desc(),
+                RecoveryDecision.created_at.desc(),
+                RecoveryDecision.id.desc(),
+            ],
+        )
+        .label("rn")
+    )
+
+    latest_decisions_subq = (
+        select(
+            RecoveryDecision.effective_action,
+            rn_col,
+        )
+        .join(RecoveryCase, RecoveryDecision.case_id == RecoveryCase.id)
+        .where(*case_filters)
+        .subquery()
+    )
+
+    intervention_stmt = select(
+        func.sum(
+            case(
+                (
+                    latest_decisions_subq.c.effective_action == "SEND_PAYMENT_LINK",
+                    1,
+                ),
+                else_=0,
+            )
+        ).label("link_count"),
+        func.sum(
+            case((latest_decisions_subq.c.effective_action == "WAIT", 1), else_=0)
+        ).label("wait_count"),
+        func.sum(
+            case(
+                (latest_decisions_subq.c.effective_action == "ESCALATE", 1),
+                else_=0,
+            )
+        ).label("escalate_count"),
+        func.sum(
+            case((latest_decisions_subq.c.effective_action == "STOP", 1), else_=0)
+        ).label("stop_count"),
+    ).where(latest_decisions_subq.c.rn == 1)
+
+    interventions_res = (await session.execute(intervention_stmt)).first()
 
     # 3. Action / Decision Attempt-Level Metrics
     action_filters = []
@@ -165,6 +249,7 @@ async def get_dashboard_metrics(
         escalated_cases=escalated_cases,
         recovery_rate_by_count=recovery_rate_by_count,
         recovery_rate_by_amount=recovery_rate_by_amount,
+        cases_by_status=status_map,
         cases_intervened_link=interventions_res.link_count or 0
         if interventions_res
         else 0,
@@ -186,4 +271,5 @@ async def get_dashboard_metrics(
         decisions_wait=decision_res.wait or 0 if decision_res else 0,
         decisions_escalate=decision_res.escalate or 0 if decision_res else 0,
         decisions_stop=decision_res.stop or 0 if decision_res else 0,
+        recovery_by_failure_reason=failure_reason_map,
     )

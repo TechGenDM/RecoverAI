@@ -1,4 +1,12 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class FailureReasonMetrics(BaseModel):
+    total_cases: int = 0
+    recovered_cases: int = 0
+    recovery_rate_by_count: float | None = None
+    amount_at_risk_paise: int = 0
+    amount_recovered_paise: int = 0
 
 
 class DashboardMetrics(BaseModel):
@@ -13,6 +21,12 @@ class DashboardMetrics(BaseModel):
     escalated_cases: int
     recovery_rate_by_count: float | None
     recovery_rate_by_amount: float | None
+
+    # Case status distribution (all 8 statuses guaranteed present)
+    cases_by_status: dict[str, int] = Field(
+        default_factory=dict,
+        description="Distribution of cases across all 8 lifecycle statuses",
+    )
 
     # Interventions (Case-Level, latest decision)
     cases_intervened_link: int
@@ -31,3 +45,9 @@ class DashboardMetrics(BaseModel):
     decisions_wait: int
     decisions_escalate: int
     decisions_stop: int
+
+    # Breakdown by original payment failure reason
+    recovery_by_failure_reason: dict[str, FailureReasonMetrics] = Field(
+        default_factory=dict,
+        description="Aggregate recovery performance grouped by payment error reason",
+    )

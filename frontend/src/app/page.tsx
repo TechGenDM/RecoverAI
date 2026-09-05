@@ -173,10 +173,14 @@ export default function DashboardPage() {
           <div className="metric-card">
             <span className="metric-title">Recovered Revenue</span>
             <div className="metric-value highlight-green">
-              {formatINR(metrics?.recovered_amount_inr || 0)}
+              {formatINR(metrics?.amount_recovered_paise || 0)}
             </div>
             <span className="metric-sub">
-              <strong>{metrics?.recovery_rate_pct?.toFixed(1) || "0.0"}%</strong>{" "}
+              <strong>
+                {metrics?.recovery_rate_by_amount !== null && metrics?.recovery_rate_by_amount !== undefined
+                  ? (metrics.recovery_rate_by_amount * 100).toFixed(1)
+                  : "0.0"}%
+              </strong>{" "}
               of total failed volume recovered
             </span>
           </div>
@@ -184,7 +188,7 @@ export default function DashboardPage() {
           <div className="metric-card">
             <span className="metric-title">Revenue at Risk</span>
             <div className="metric-value">
-              {formatINR(metrics?.total_amount_at_risk_inr || 0)}
+              {formatINR(metrics?.amount_at_risk_paise || 0)}
             </div>
             <span className="metric-sub">
               Failed payments intercepted in {mode} mode
@@ -194,7 +198,9 @@ export default function DashboardPage() {
           <div className="metric-card">
             <span className="metric-title">Recovery Rate</span>
             <div className="metric-value highlight-blue">
-              {metrics?.recovery_rate_pct?.toFixed(1) || "0.0"}%
+              {metrics?.recovery_rate_by_count !== null && metrics?.recovery_rate_by_count !== undefined
+                ? (metrics.recovery_rate_by_count * 100).toFixed(1)
+                : "0.0"}%
             </div>
             <span className="metric-sub">
               {recoveredCount} of {totalCases} cases successfully resolved
@@ -412,33 +418,43 @@ export default function DashboardPage() {
                   </thead>
                   <tbody>
                     {Object.entries(metrics.recovery_by_failure_reason).map(
-                      ([reason, data]) => (
-                        <tr key={reason}>
-                          <td>
-                            <span className="code-pill">{reason}</span>
-                          </td>
-                          <td>{data.total_cases}</td>
-                          <td>{data.recovered_cases}</td>
-                          <td>
-                            <strong
-                              style={{
-                                color:
-                                  data.recovery_rate_pct > 30
-                                    ? "#059669"
-                                    : "var(--text-muted)",
-                              }}
-                            >
-                              {data.recovery_rate_pct.toFixed(1)}%
-                            </strong>
-                          </td>
-                          <td>{formatINR(data.amount_at_risk_inr)}</td>
-                          <td>
-                            <strong style={{ color: "#059669" }}>
-                              {formatINR(data.amount_recovered_inr)}
-                            </strong>
-                          </td>
-                        </tr>
-                      )
+                      ([reason, data]) => {
+                        const ratePct =
+                          data.recovery_rate_by_count !== null &&
+                          data.recovery_rate_by_count !== undefined
+                            ? data.recovery_rate_by_count * 100
+                            : 0;
+                        return (
+                          <tr key={reason}>
+                            <td>
+                              <span className="code-pill">{reason}</span>
+                            </td>
+                            <td>{data.total_cases}</td>
+                            <td>{data.recovered_cases}</td>
+                            <td>
+                              <strong
+                                style={{
+                                  color:
+                                    ratePct > 30
+                                      ? "#059669"
+                                      : "var(--text-muted)",
+                                }}
+                              >
+                                {data.recovery_rate_by_count !== null &&
+                                data.recovery_rate_by_count !== undefined
+                                  ? `${ratePct.toFixed(1)}%`
+                                  : "—"}
+                              </strong>
+                            </td>
+                            <td>{formatINR(data.amount_at_risk_paise)}</td>
+                            <td>
+                              <strong style={{ color: "#059669" }}>
+                                {formatINR(data.amount_recovered_paise)}
+                              </strong>
+                            </td>
+                          </tr>
+                        );
+                      }
                     )}
                   </tbody>
                 </table>
