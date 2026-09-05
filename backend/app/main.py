@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import engine, get_db
 from app.routers.scheduler import router as scheduler_router
 from app.routers.webhooks import router as webhooks_router
+from app.routers.dashboard import router as dashboard_router
 
 
 @asynccontextmanager
@@ -30,6 +31,7 @@ app.include_router(webhooks_router, prefix="/v1/webhooks")
 app.include_router(webhooks_router, prefix="/webhooks")
 
 app.include_router(scheduler_router)
+app.include_router(dashboard_router)
 
 
 @app.get("/health")
