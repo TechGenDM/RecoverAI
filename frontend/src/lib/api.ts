@@ -130,6 +130,7 @@ export interface ActionSafe {
   outcome: string | null;
   razorpay_link_id: string | null;
   razorpay_link_reference_id: string | null;
+  razorpay_link_short_url: string | null;
   executed_at: string | null;
   failure_reason: string | null;
   created_at: string | null;

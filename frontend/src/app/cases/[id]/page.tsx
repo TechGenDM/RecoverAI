@@ -20,6 +20,17 @@ export default function CaseDetailPage({
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
+
+  const handleCopyLink = async (linkUrl: string, actionId: string) => {
+    try {
+      await navigator.clipboard.writeText(linkUrl);
+      setCopiedLinkId(actionId);
+      setTimeout(() => setCopiedLinkId(null), 2000);
+    } catch {
+      // Clipboard fallback or ignore
+    }
+  };
 
   useEffect(() => {
     async function loadCaseData() {
@@ -369,6 +380,114 @@ export default function CaseDetailPage({
                         {a.failure_reason && (
                           <div style={{ color: "#dc2626", fontSize: "0.8125rem" }}>
                             Failure: {a.failure_reason}
+                          </div>
+                        )}
+
+                        {/* Razorpay Test Mode Payment Link Section */}
+                        {a.action_type === "SEND_PAYMENT_LINK" && (
+                          <div
+                            style={{
+                              marginTop: "0.75rem",
+                              padding: "0.75rem",
+                              backgroundColor: "var(--surface-subtle)",
+                              borderRadius: "6px",
+                              border: "1px solid var(--border-subtle)",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                marginBottom: "0.375rem",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: "0.75rem",
+                                  fontWeight: 600,
+                                  color: "var(--text-muted)",
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.04em",
+                                }}
+                              >
+                                Razorpay Test Mode Recovery Link
+                              </span>
+                              {a.outcome === "EXPIRED" && (
+                                <span className="badge badge-stopped" style={{ fontSize: "0.7rem" }}>
+                                  Link Expired
+                                </span>
+                              )}
+                              {a.outcome === "CANCELLED" && (
+                                <span className="badge badge-stopped" style={{ fontSize: "0.7rem" }}>
+                                  Link Cancelled
+                                </span>
+                              )}
+                            </div>
+
+                            {a.razorpay_link_short_url ? (
+                              <div>
+                                <div style={{ wordBreak: "break-all", marginBottom: "0.5rem" }}>
+                                  <span className="code-pill" style={{ fontSize: "0.8125rem" }}>
+                                    {a.razorpay_link_short_url}
+                                  </span>
+                                </div>
+                                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                                  <a
+                                    href={a.razorpay_link_short_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-primary"
+                                    style={{
+                                      padding: "0.375rem 0.75rem",
+                                      fontSize: "0.8125rem",
+                                      textDecoration: "none",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "0.25rem",
+                                    }}
+                                  >
+                                    Open Payment Link &nearr;
+                                  </a>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyLink(a.razorpay_link_short_url!, a.id)}
+                                    className="btn-secondary"
+                                    style={{
+                                      padding: "0.375rem 0.75rem",
+                                      fontSize: "0.8125rem",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: "0.25rem",
+                                    }}
+                                  >
+                                    {copiedLinkId === a.id ? "✓ Copied" : "Copy Link"}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : a.status === "PENDING" || a.status === "EXECUTING" ? (
+                              <div
+                                style={{
+                                  color: "var(--text-muted)",
+                                  fontSize: "0.8125rem",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "0.4rem",
+                                  marginTop: "0.25rem",
+                                }}
+                              >
+                                <span className="status-dot status-dot-live" />
+                                <span>Action executing — payment link creation in progress...</span>
+                              </div>
+                            ) : a.status === "FAILED" ? (
+                              <div style={{ color: "#dc2626", fontSize: "0.8125rem", marginTop: "0.25rem" }}>
+                                Payment link unavailable: execution failed.
+                              </div>
+                            ) : (
+                              <div style={{ color: "var(--text-light)", fontSize: "0.8125rem", marginTop: "0.25rem" }}>
+                                Payment link unavailable.
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

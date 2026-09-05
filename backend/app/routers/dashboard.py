@@ -241,6 +241,7 @@ async def get_case_detail(
             "outcome": a.outcome,
             "razorpay_link_id": a.razorpay_link_id,
             "razorpay_link_reference_id": a.razorpay_link_reference_id,
+            "razorpay_link_short_url": a.razorpay_link_short_url,
             "executed_at": a.executed_at.isoformat() if a.executed_at else None,
             "failure_reason": a.failure_reason,
             "created_at": a.created_at.isoformat() if a.created_at else None,
