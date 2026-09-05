@@ -33,6 +33,8 @@ def _parse_cors_origins(raw: str) -> list[str]:
     if not raw:
         return ["http://localhost:3000", "http://127.0.0.1:3000"]
     origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if "*" in origins:
+        raise ValueError("CORS_ORIGINS cannot contain '*' when allow_credentials=True. Use specific origins.")
     return origins if origins else ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 

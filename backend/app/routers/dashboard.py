@@ -95,7 +95,7 @@ async def execute_simulation(
     request: SimulationRequest,
     session: AsyncSession = Depends(get_db),
 ):
-    if not getattr(settings, "ENABLE_SIMULATION_ENDPOINT", True):
+    if not settings.ENABLE_SIMULATION_ENDPOINT:
         raise HTTPException(status_code=403, detail="Simulation endpoint is disabled.")
 
     if request.scenario_count > 100:

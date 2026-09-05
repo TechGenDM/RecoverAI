@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # Execution Mode
     MODE: Literal["LIVE", "SIMULATED"] = "LIVE"
+    ENABLE_SIMULATION_ENDPOINT: bool = False
 
     # Database
     DATABASE_URL: str = (
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
-    LLM_MODEL: str = "gemini-2.5-flash"
+    LLM_MODEL: str = "gemini-2.0-flash"
     GEMINI_API_KEY: SecretStr = Field(default=SecretStr(""))
     OPENAI_API_KEY: SecretStr = Field(default=SecretStr(""))
     ANTHROPIC_API_KEY: SecretStr = Field(default=SecretStr(""))
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
             "DATABASE_URL_SCHEME": self.DATABASE_URL.split("://")[0]
             if "://" in self.DATABASE_URL
             else "unknown",
+            "ENABLE_SIMULATION_ENDPOINT": self.ENABLE_SIMULATION_ENDPOINT,
             "RAZORPAY_KEY_ID_PRESENT": bool(self.RAZORPAY_KEY_ID),
             "RAZORPAY_KEY_SECRET_SET": bool(
                 self.RAZORPAY_KEY_SECRET.get_secret_value()

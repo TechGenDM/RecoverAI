@@ -241,7 +241,7 @@ async def _persist_execution_result(
     case = await session.get(RecoveryCase, case_id, with_for_update=True)
     action = await session.get(RecoveryAction, action_id)
 
-    print(f"DEBUG: persist case={case} action={action} result={result}")
+
 
     if case is None or action is None:
         logger.error(
@@ -274,7 +274,7 @@ async def _persist_execution_result(
 
     if case.status not in ("EXECUTING", "STOPPED"):
         # Unexpected state — do not modify
-        print(f"DEBUG: unexpected case status: {case.status}")
+
         logger.warning(
             "Case %s in unexpected state %s during result persistence",
             case_id,
@@ -296,7 +296,7 @@ async def _persist_execution_result(
         return
 
     if result.success:
-        print("DEBUG: result.success is True, updating action status")
+
         action.status = "SUCCESS"
         action.razorpay_link_id = result.razorpay_link_id
         action.razorpay_link_short_url = result.short_url
