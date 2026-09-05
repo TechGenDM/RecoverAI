@@ -55,3 +55,6 @@ next-env.d.ts
 
 # Postgres Data (local)
 postgres_data/
+
+# Scratch & Temporary Scripts
+scratch/
