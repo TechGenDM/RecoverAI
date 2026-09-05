@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: SecretStr = Field(default=SecretStr(""))
     RAZORPAY_WEBHOOK_SECRET: SecretStr = Field(default=SecretStr(""))
+
+    @field_validator("RAZORPAY_KEY_ID")
+    @classmethod
+    def validate_razorpay_key_test_mode(cls, v: str) -> str:
+        if v and not v.startswith("rzp_test_"):
+            raise ValueError(
+                "RAZORPAY_KEY_ID must begin with 'rzp_test_' for Test Mode. Live keys are strictly prohibited."
+            )
+        return v
 
     # LLM Configuration
     LLM_PROVIDER: Literal["gemini", "openai", "anthropic"] = "gemini"
@@ -61,6 +70,17 @@ class Settings(BaseSettings):
             else "unknown",
             "ENABLE_SIMULATION_ENDPOINT": self.ENABLE_SIMULATION_ENDPOINT,
             "RAZORPAY_KEY_ID_PRESENT": bool(self.RAZORPAY_KEY_ID),
+            "RAZORPAY_KEY_ID_MASKED": (
+                self.RAZORPAY_KEY_ID[:8] + "****" + self.RAZORPAY_KEY_ID[-4:]
+                if len(self.RAZORPAY_KEY_ID) > 12
+                else (
+                    self.RAZORPAY_KEY_ID[:8] + "****"
+                    if len(self.RAZORPAY_KEY_ID) >= 8
+                    else "not_set"
+                )
+            )
+            if self.RAZORPAY_KEY_ID
+            else "not_set",
             "RAZORPAY_KEY_SECRET_SET": bool(
                 self.RAZORPAY_KEY_SECRET.get_secret_value()
             ),

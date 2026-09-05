@@ -54,3 +54,25 @@ def test_config_bounds_validation():
     # Link expiry bounds: 1 to 72 hours
     with pytest.raises(ValidationError):
         Settings(RECOVERY_LINK_EXPIRY_HOURS=200)
+
+
+def test_config_rejects_live_razorpay_key():
+    with pytest.raises(ValidationError, match="must begin with 'rzp_test_'"):
+        Settings(RAZORPAY_KEY_ID="rzp_live_1234567890abcdef")
+
+
+def test_config_accepts_test_razorpay_key():
+    s = Settings(RAZORPAY_KEY_ID="rzp_test_1234567890abcdef")
+    assert s.RAZORPAY_KEY_ID == "rzp_test_1234567890abcdef"
+    assert s.safe_dict()["RAZORPAY_KEY_ID_MASKED"] == "rzp_test****cdef"
+
+
+def test_webhook_endpoint_routing_and_method_restriction():
+    # GET /v1/webhooks/razorpay is not permitted (must be POST)
+    resp_get = client.get("/v1/webhooks/razorpay")
+    assert resp_get.status_code == 405
+
+    # POST /v1/webhooks/razorpay without required headers rejects safely with 400
+    resp_post = client.post("/v1/webhooks/razorpay", json={"event": "ping"})
+    assert resp_post.status_code == 400
+    assert resp_post.json()["error"] == "missing_signature"
