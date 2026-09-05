@@ -2,13 +2,14 @@
 
 <div align="center">
 
-![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%203%20Complete-success?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-71%20Passing-brightgreen?style=for-the-badge)
-![Audit](https://img.shields.io/badge/Production%20Audit-15%2F15%20Verified-blue?style=for-the-badge)
+![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%204%20Complete-success?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-92%20Passing-brightgreen?style=for-the-badge)
+![Audit](https://img.shields.io/badge/Production%20Audit-Verified-blue?style=for-the-badge)
+![Determinism](https://img.shields.io/badge/Determinism-SHA--256%20100%25-9cf?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=next.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 
 **An enterprise-grade, deterministic, bounded AI revenue-recovery agent designed for the Razorpay AI Revenue Recovery Buildathon.**
@@ -268,9 +269,24 @@ cp .env.local.example .env.local
 npm install
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) to view the Next.js application.
+Open [http://localhost:3000](http://localhost:3000) to view the RecoverAI Executive Dashboard.
 
----
+#### Dashboard Capabilities & Views:
+- **Executive Revenue Dashboard (`/`)**:
+  - **LIVE / SIMULATED Mode Switcher**: Live data isolation with visual sandbox indicator.
+  - **Revenue KPI Cards**: Real-time aggregate of Revenue at Risk, Revenue Recovered, Recovery Rate (%), and Payment Links Dispatched.
+  - **Recovery Lifecycle Funnel**: Visual tracking of case progression from Ingestion → Policy Analysis → Dispatch → Terminal Recovery.
+  - **Recovery Efficiency by Failure Reason**: Granular success metrics comparing recovery rates across error types (issuer downtime, risk check failures, auth timeouts).
+  - **Interactive Simulation Control Panel**: Run reproducible batches by providing integer seeds and scenario counts with instant outcome breakdowns.
+- **Recovery Cases Explorer (`/cases`)**:
+  - Filterable by Mode (`LIVE` / `SIMULATED`) and Status (`ALL`, `RECOVERED`, `LINK_SENT`, `WAITING`, `EXECUTING`, `ANALYSING`, `CREATED`, `STOPPED`, `ESCALATED`).
+  - Searchable by payment ID or case ID with full amounts and recovered payment links.
+- **Case Detail & Audit Trail (`/cases/[id]`)**:
+  - Original failed payment snapshot (error code, reason, source, step, method).
+  - Customer contactability channels (PII redacted; email/phone channel flags).
+  - M2 Diagnostic Decisions & Policy Engine verdicts (recommended action, effective action, LLM confidence, heuristic likelihood, safety delay).
+  - M3 Recovery Actions & Reference IDs (`rc-{case_id_hex[:24]}-a{n}`).
+  - Chronological audit event log with sanitized payload metadata.
 
 ## 🚦 Implementation Roadmap
 
@@ -280,15 +296,15 @@ Open [http://localhost:3000](http://localhost:3000) to view the Next.js applicat
 | **M1** | **Ingestion & Cases** | Razorpay webhook signature verification, event deduplication, customer upsert, payment failure ingestion, case creation (CREATED status), audit logging | **Implemented** ✅ |
 | **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini 2.0 / Mock adapter, structured strategy proposal, deterministic policy engine, async claim batching | **Implemented** ✅ |
 | **M3** | **Recovery Executor & Policy** | Dual-mode executor (LIVE & SIMULATED), atomic claim (`FOR UPDATE SKIP LOCKED`), deterministic `reference_id` reconciliation (`GET /v1/payment_links/?reference_id=...`), Razorpay Payment Links, zero DB transaction during HTTP, webhook reconciliation | **Implemented & Audited** ✅ |
-| **M4** | **Reconciliation & Orchestration** | State machine transitions, unified background runner, recovery verification, late payment handling | Scheduled ⏳ |
-| **M5** | **Synthetic Batch & Metrics** | 20+ realistic payment failure scenarios, simulated engine, recovery rate, ROI, prevented-churn analytics | Scheduled ⏳ |
-| **M6** | **Frontend Dashboard & Demo** | Metric cards, live case explorer, audit trail inspector, interactive simulator, end-to-end demo flow | Scheduled ⏳ |
+| **M4** | **Observability, Metrics & Dashboard** | Aggregate recovery metrics API, SHA-256 deterministic simulation sandbox, virtual clock isolation (`SIM_EPOCH`), heuristic outcome model, Next.js 16 executive fintech dashboard, cases explorer, case detail & sanitized audit trail | **Implemented & Audited** ✅ |
+| **M5** | **Synthetic Batch & Metrics** | Extended synthetic scenarios, long-term ROI, and prevented-churn analytics | Scheduled ⏳ |
+| **M6** | **Production Hardening & Demo** | End-to-end demo video, packaging, and final submission artifacts | Scheduled ⏳ |
 
 ---
 
 ## 🧪 Comprehensive Automated Test Suite
 
-RecoverAI features **71 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
+RecoverAI features **92 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
 
 ```
 tests/test_main.py                  ...      [Health check & configuration loading]
@@ -302,8 +318,10 @@ tests/test_analysis_service.py      .        [End-to-end diagnostic analysis & d
 tests/test_scheduler.py             ..       [Async locking & batch claim concurrency]
 tests/test_executor.py              ........ [Category B reconciliation, live/simulated executors, atomic claim, zero-transaction isolation]
 tests/test_payment_link_webhooks.py ........ [Payment link webhook reconciliation, late window payment, amount verification]
+tests/test_metrics.py               ......   [Recovery metrics, funnel counts, LIVE/SIMULATED isolation]
+tests/test_simulation.py            ............... [SHA-256 determinism, clock isolation, idempotency, heuristic model, fail-closed reconciliation, wall-clock independence]
 
-======================== 71 passed in 7.18s =========================
+======================== 92 passed in 51.02s =========================
 ```
 
 ### 15-Point Production Safety Verification Audit
