@@ -164,7 +164,7 @@ export default function DashboardPage() {
               fontSize: "0.875rem",
             }}
           >
-            {error} (Ensure backend server is running on http://localhost:8000)
+            {error}
           </div>
         )}
 
