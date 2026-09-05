@@ -67,9 +67,7 @@ async def test_trigger_case_analysis_endpoint(db_session, setup_test_data):
     client = TestClient(app)
 
     # Reset a case to CREATED
-    case = (
-        await db_session.execute(select(RecoveryCase).limit(1))
-    ).scalar_one()
+    case = (await db_session.execute(select(RecoveryCase).limit(1))).scalar_one()
     await db_session.execute(
         update(RecoveryCase).where(RecoveryCase.id == case.id).values(status="CREATED")
     )
@@ -80,4 +78,3 @@ async def test_trigger_case_analysis_endpoint(db_session, setup_test_data):
     data = resp.json()
     assert data["case_id"] == str(case.id)
     assert data["status"] in ("ANALYSING", "WAITING", "ESCALATED", "STOPPED")
-

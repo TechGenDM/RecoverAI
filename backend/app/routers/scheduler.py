@@ -29,9 +29,7 @@ async def trigger_case_analysis(
     """Run M2 analysis strictly for a single case without running M3 execution."""
     stmt = (
         select(RecoveryCase)
-        .options(
-            selectinload(RecoveryCase.payment).selectinload(Payment.customer)
-        )
+        .options(selectinload(RecoveryCase.payment).selectinload(Payment.customer))
         .where(RecoveryCase.id == case_id)
     )
     case = (await db.execute(stmt)).scalar_one_or_none()
@@ -46,4 +44,3 @@ async def trigger_case_analysis(
         "case_id": str(case.id),
         "status": case.status,
     }
-

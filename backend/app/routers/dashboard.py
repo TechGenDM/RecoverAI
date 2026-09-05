@@ -193,8 +193,11 @@ async def get_case_detail(
 
     # Customer capability — booleans only, no actual PII
     customer_capability = {"has_email": False, "has_phone": False}
-    if case.customer_id:
-        customer = await session.get(Customer, case.customer_id)
+    cust_id = case.customer_id or (
+        original_payment.customer_id if original_payment else None
+    )
+    if cust_id:
+        customer = await session.get(Customer, cust_id)
         if customer:
             customer_capability = {
                 "has_email": bool(customer.email),

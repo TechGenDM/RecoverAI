@@ -116,9 +116,18 @@ def test_llm_facing_serialization_never_presents_ambiguous_amount():
     assert "amount" not in payment_dict
 
     # Raw JSON string verification
-    assert '"amount_paise": 50000' in serialized_json or '"amount_paise":50000' in serialized_json
-    assert '"amount_inr": 500.0' in serialized_json or '"amount_inr":500.0' in serialized_json
-    assert '"amount_formatted": "₹500.00"' in serialized_json or '"amount_formatted":"₹500.00"' in serialized_json
+    assert (
+        '"amount_paise": 50000' in serialized_json
+        or '"amount_paise":50000' in serialized_json
+    )
+    assert (
+        '"amount_inr": 500.0' in serialized_json
+        or '"amount_inr":500.0' in serialized_json
+    )
+    assert (
+        '"amount_formatted": "₹500.00"' in serialized_json
+        or '"amount_formatted":"₹500.00"' in serialized_json
+    )
     assert '"amount": 50000' not in serialized_json
     assert '"amount":50000' not in serialized_json
 

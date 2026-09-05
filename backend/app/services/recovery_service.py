@@ -241,8 +241,6 @@ async def _persist_execution_result(
     case = await session.get(RecoveryCase, case_id, with_for_update=True)
     action = await session.get(RecoveryAction, action_id)
 
-
-
     if case is None or action is None:
         logger.error(
             "Case %s or action %s not found during result persistence",
@@ -296,7 +294,6 @@ async def _persist_execution_result(
         return
 
     if result.success:
-
         action.status = "SUCCESS"
         action.razorpay_link_id = result.razorpay_link_id
         action.razorpay_link_short_url = result.short_url

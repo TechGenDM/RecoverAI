@@ -1,12 +1,13 @@
 import hashlib
 import hmac
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -148,6 +149,37 @@ def parse_timestamp(ts: Any) -> datetime | None:
 
 class WebhookIngestionService:
     @staticmethod
+    def _normalize_contact_info(
+        email: Any, contact: Any
+    ) -> tuple[str | None, str | None]:
+        """Validates and normalizes email and phone contact info.
+
+        Rejects empty strings, whitespace, and malformed values.
+        """
+        norm_email: str | None = None
+        if isinstance(email, str):
+            cleaned_email = email.strip()
+            if (
+                cleaned_email
+                and " " not in cleaned_email
+                and cleaned_email.count("@") == 1
+                and "." in cleaned_email.split("@")[1]
+                and len(cleaned_email) >= 5
+            ):
+                norm_email = cleaned_email.lower()
+
+        norm_phone: str | None = None
+        if isinstance(contact, str):
+            cleaned_phone = contact.strip()
+            digits = [c for c in cleaned_phone if c.isdigit()]
+            if 7 <= len(digits) <= 15 and re.fullmatch(
+                r"^\+?[\d\s\-()]{7,25}$", cleaned_phone
+            ):
+                norm_phone = cleaned_phone
+
+        return norm_email, norm_phone
+
+    @staticmethod
     async def _upsert_customer(
         db: AsyncSession,
         customer_id_str: str,
@@ -195,6 +227,74 @@ class WebhookIngestionService:
         if contact and not customer.phone:
             customer.phone = contact
 
+        return customer
+
+    @staticmethod
+    async def _find_or_create_fallback_customer(
+        db: AsyncSession,
+        email: Any,
+        contact: Any,
+    ) -> Customer | None:
+        """Finds or creates an internal Customer when razorpay_customer_id is absent.
+
+        Uses verified contact info (email/phone) from the payment payload.
+        Idempotent and concurrency-safe via advisory lock when on PostgreSQL.
+        Does NOT fabricate a Razorpay customer ID or call Razorpay APIs.
+        """
+        norm_email, norm_phone = WebhookIngestionService._normalize_contact_info(
+            email, contact
+        )
+        if not norm_email and not norm_phone:
+            return None
+
+        # Advisory lock on PostgreSQL for concurrency safety
+        try:
+            bind = db.bind or (
+                getattr(db, "sync_session", None) and db.sync_session.bind
+            )
+            dialect_name = getattr(bind.dialect, "name", "") if bind else ""
+            if dialect_name == "postgresql":
+                lock_key = f"cust_fallback:{norm_email or norm_phone}"
+                await db.execute(
+                    select(func.pg_advisory_xact_lock(func.hashtext(lock_key)))
+                )
+        except (SQLAlchemyError, DBAPIError) as exc:
+            logger.debug("Advisory lock skipped or unavailable: %s", exc)
+
+        # 1. Search for existing Customer matching email or phone
+        conditions = []
+        if norm_email:
+            conditions.append(Customer.email == norm_email)
+        if norm_phone:
+            conditions.append(Customer.phone == norm_phone)
+
+        stmt = (
+            select(Customer).where(or_(*conditions)).order_by(Customer.created_at.asc())
+        )
+        result = await db.execute(stmt)
+        customer = result.scalars().first()
+
+        if customer is not None:
+            updated = False
+            if norm_email and not customer.email:
+                customer.email = norm_email
+                updated = True
+            if norm_phone and not customer.phone:
+                customer.phone = norm_phone
+                updated = True
+            if updated:
+                await db.flush()
+            return customer
+
+        # 2. Create new internal Customer without a razorpay_customer_id
+        customer = Customer(
+            razorpay_customer_id=None,
+            email=norm_email,
+            phone=norm_phone,
+            name=None,
+        )
+        db.add(customer)
+        await db.flush()
         return customer
 
     @staticmethod
@@ -364,7 +464,9 @@ class WebhookIngestionService:
                 "event_id": event_id,
             }
 
-        # 9. Concurrency-safe customer upsert if razorpay_customer_id is present
+        # 9. Concurrency-safe customer association:
+        # Path A (existing): If razorpay_customer_id is present, use _upsert_customer
+        # Path B (fallback): If customer_id is absent, find or create internal Customer via email/contact
         customer_id_str = entity.get("customer_id")
         email = entity.get("email")
         contact = entity.get("contact")
@@ -373,6 +475,12 @@ class WebhookIngestionService:
         if customer_id_str:
             customer_record = await WebhookIngestionService._upsert_customer(
                 db, customer_id_str, email, contact
+            )
+        else:
+            customer_record = (
+                await WebhookIngestionService._find_or_create_fallback_customer(
+                    db, email, contact
+                )
             )
 
         # 10. Sanitize payload snapshot
