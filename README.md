@@ -2,8 +2,10 @@
 
 <div align="center">
 
-![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%204%20Complete-success?style=for-the-badge)
-![Tests](https://img.shields.io/badge/Tests-93%20Passing-brightgreen?style=for-the-badge)
+![RecoverAI Status](https://img.shields.io/badge/Status-Milestone%205%20Verified%20--%20Production%20Live-success?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-113%20Passing-brightgreen?style=for-the-badge)
+![Live Frontend](https://img.shields.io/badge/Vercel-Live%20Dashboard-black?style=for-the-badge&logo=vercel)
+![Live Backend](https://img.shields.io/badge/Railway-Live%20API-blueviolet?style=for-the-badge&logo=railway)
 ![Audit](https://img.shields.io/badge/Production%20Audit-Verified-blue?style=for-the-badge)
 ![Determinism](https://img.shields.io/badge/Determinism-SHA--256%20100%25-9cf?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi&logoColor=white)
@@ -14,7 +16,7 @@
 
 **An enterprise-grade, deterministic, bounded AI revenue-recovery agent designed for the Razorpay AI Revenue Recovery Buildathon.**
 
-[Architecture](./docs/architecture.md) • [Agent Contract](./docs/agent_contract.md) • [Deployment Guide](./docs/deployment.md) • [Demo Script](./docs/demo_script.md) • [Milestones](#-implementation-roadmap)
+[Live Dashboard](https://frontend-pearl-beta-dgjifr4fvi.vercel.app) • [Live API](https://backend-production-740b3.up.railway.app) • [Architecture](./docs/architecture.md) • [Agent Contract](./docs/agent_contract.md) • [Deployment Guide](./docs/deployment.md) • [Demo Script](./docs/demo_script.md) • [Milestones](#-implementation-roadmap)
 
 </div>
 
@@ -41,6 +43,14 @@ Failed Razorpay Payment
          ↓
   Payment Reconciliation (Tracks recovery with distinct recovered_payment_id)
 ```
+
+### 🌐 Live Production Deployments
+
+| Component | Platform | Live URL | Verification Status |
+| :--- | :--- | :--- | :--- |
+| **Executive Dashboard (Frontend)** | Vercel | [https://frontend-pearl-beta-dgjifr4fvi.vercel.app](https://frontend-pearl-beta-dgjifr4fvi.vercel.app) | **Live & Browser Verified** |
+| **Recovery Agent Engine (Backend)** | Railway | [https://backend-production-740b3.up.railway.app](https://backend-production-740b3.up.railway.app) | **Live & API Verified** (`/health`) |
+| **Relational Ledger (Database)** | Railway | Managed PostgreSQL 16 (Async SQLAlchemy / Alembic) | **Active & Migrated** |
 
 ---
 
@@ -163,11 +173,11 @@ RecoverAI/
 │   │   │   ├── webhook_event.py
 │   │   │   └── audit_event.py
 │   │   ├── routers/               # API endpoints
-│   │   │   ├── health.py          # Health probe
 │   │   │   ├── webhooks.py        # Razorpay signature & webhook receiver
-│   │   │   └── scheduler.py       # Scheduler tick trigger endpoint
+│   │   │   ├── scheduler.py       # Batch claims & targeted single-case execution APIs
+│   │   │   └── dashboard.py       # Metrics, simulation runner, case detail & timeline
 │   │   ├── schemas/               # Pydantic validation & transfer schemas
-│   │   │   ├── context.py         # Diagnostic context schema
+│   │   │   ├── context.py         # Diagnostic context schema (explicit money representation)
 │   │   │   ├── decision.py        # LLM decision & policy schemas
 │   │   │   ├── safety.py          # Safety evaluation schemas
 │   │   │   └── executor.py        # Execution results & error schemas
@@ -181,34 +191,46 @@ RecoverAI/
 │   │       ├── razorpay_client.py # Async Razorpay API client
 │   │       ├── llm/               # Pluggable LLM reasoning providers
 │   │       │   ├── base.py
-│   │       │   ├── gemini_provider.py
+│   │       │   ├── gemini_provider.py # Production Gemini 3.6 Flash adapter
 │   │       │   └── mock_provider.py
 │   │       └── executor/          # Recovery execution backends
 │   │           ├── base.py
 │   │           ├── live_executor.py
 │   │           └── simulated_executor.py
-│   └── tests/                     # 71 automated unit & integration tests
+│   └── tests/                     # 113 automated unit & integration tests
 │       ├── conftest.py            # Database isolation & test fixtures
 │       ├── test_main.py           # Health check and config tests
 │       ├── test_models.py         # Declarative model validation tests
 │       ├── test_schema_constraints.py # Database constraints verification
 │       ├── test_webhook_ingestion.py  # Signature, deduplication, case creation
 │       ├── test_context_builder.py    # Failure telemetry & history aggregation
+│       ├── test_customer_fallback.py  # Customer contact fallback validation
+│       ├── test_money_unit_context.py # Explicit money representation validation
 │       ├── test_llm_provider.py       # LLM provider contract tests
 │       ├── test_safety_validator.py   # Policy engine boundary checks
 │       ├── test_analysis_service.py   # End-to-end diagnostic analysis
 │       ├── test_scheduler.py          # Async locking & batch claims
 │       ├── test_executor.py           # Atomic execution & link reconciliation
-│       └── test_payment_link_webhooks.py # Paid webhook reconciliation
-└── frontend/                      # Next.js 15 / React / TypeScript App
-    ├── .env.local.example         # Frontend environment template
+│       ├── test_payment_link_webhooks.py # Paid webhook reconciliation
+│       ├── test_metrics.py            # Aggregate metrics API tests
+│       ├── test_case_detail.py        # Case detail & sanitized timeline tests
+│       └── test_simulation.py         # SHA-256 determinism & simulation tests
+└── frontend/                      # Next.js 16 / React 19 / TypeScript App
+    ├── .env.local.example         # Frontend local environment template
+    ├── .env.production.example    # Frontend production environment template
     ├── package.json               # Frontend dependencies and scripts
     ├── tsconfig.json              # TypeScript configuration
     ├── eslint.config.mjs          # Next.js ESLint configuration
-    └── src/app/                   # App router pages, layouts, and styles
-        ├── layout.tsx             # Root HTML layout
-        ├── page.tsx               # Recovery dashboard placeholder
-        └── globals.css            # Base stylesheet
+    └── src/
+        ├── lib/
+        │   └── api.ts             # Strongly-typed RecoverAI API client
+        └── app/                   # App router pages, layouts, and styles
+            ├── layout.tsx         # Root HTML layout & font loading
+            ├── page.tsx           # Executive Revenue Dashboard & Simulation panel
+            ├── globals.css        # Base stylesheet
+            └── cases/
+                ├── page.tsx       # Recovery Cases Explorer
+                └── [id]/page.tsx  # Case Detail & Sanitized Audit Trail
 ```
 
 ---
@@ -304,31 +326,49 @@ See the complete step-by-step setup in the [Production Deployment Guide](./docs/
 | **M2** | **Context & Diagnostic Agent** | Failure context builder, LLM prompt engineering, Gemini 2.0 / Mock adapter, structured strategy proposal, deterministic policy engine, async claim batching | **Implemented** ✅ |
 | **M3** | **Recovery Executor & Policy** | Dual-mode executor (LIVE & SIMULATED), atomic claim (`FOR UPDATE SKIP LOCKED`), deterministic `reference_id` reconciliation (`GET /v1/payment_links/?reference_id=...`), Razorpay Payment Links, zero DB transaction during HTTP, webhook reconciliation | **Implemented & Audited** ✅ |
 | **M4** | **Observability, Metrics & Dashboard** | Aggregate recovery metrics API, SHA-256 deterministic simulation sandbox, virtual clock isolation (`SIM_EPOCH`), heuristic outcome model, Next.js 16 executive fintech dashboard, cases explorer, case detail & sanitized audit trail | **Implemented & Audited** ✅ |
-| **M5** | **Synthetic Batch & Metrics** | Extended synthetic scenarios, long-term ROI, and prevented-churn analytics | Scheduled ⏳ |
-| **M6** | **Production Hardening & Demo** | End-to-end demo video, packaging, and final submission artifacts | Scheduled ⏳ |
+| **M5** | **Production Hardening & Live E2E Verification** | Real Razorpay Test Mode E2E recovery, genuine payment.failed webhook intake, single-case targeted scheduler APIs, real Gemini 3.6 Flash reasoning, safety validator, Razorpay Payment Link dispatch, payment_link.paid webhook reconciliation, Railway & Vercel deployment, Chrome DevTools Protocol automated verification | **Implemented & Verified** ✅ |
+| **M6** | **Final Presentation & Submission Freeze** | Demo walkthrough recording, pitch deck alignment, documentation freeze | Scheduled ⏳ |
+
+---
+
+### 🎯 Real Razorpay Test Mode E2E Verification (Case #4)
+
+RecoverAI executed a 100% genuine live recovery workflow against Razorpay's API and webhooks without synthetic payloads or database overrides:
+
+1. **Original Failed Payment**: `pay_TYRIjF2WPjyOWJ` (₹500 INR / 50,000 paise).
+2. **Webhook Intake**: Ingested genuine `payment.failed` event (`event_TYRIjJ9oW09rUv`), signature cryptographically verified via HMAC SHA256, creating `RecoveryCase` `5d705e02-a257-4dfe-87e6-7e00f599d7b7` in `CREATED` status.
+3. **M2 Diagnostic Agent**: Invoked Google Gemini (`gemini-3.6-flash`) with explicit money context (`amount_paise: 50000`, `amount_inr: 500.0`, `amount_formatted: "₹500.00"`); recommended `SEND_PAYMENT_LINK`.
+4. **Deterministic Policy Engine**: Validated attempt window, customer contactability, and monetary thresholds; issued `ALLOW` verdict with `effective_action: SEND_PAYMENT_LINK`.
+5. **M3 Autonomous Execution**: Executed live outbound API call to Razorpay creating Payment Link `plink_TYRS1gu2d7I71d` with deterministic reference `rc-5d705e02a2574dfe87e67e00-a1`, transitioning case to `LINK_SENT`.
+6. **Customer Payment & Webhook Reconciliation**: Customer completed payment `pay_TYRU1SPM9aO2VS` on the link. Razorpay dispatched genuine `payment_link.paid` event (`event_TYRU1f7Mfqn8sK`).
+7. **Terminal State Transition**: Case transitioned to `RECOVERED` with `amount_recovered: 50000 paise` (`₹500.00`) and `recovered_payment_id: pay_TYRU1SPM9aO2VS`.
+8. **Dashboard Verification**: Live Executive Dashboard accurately displays ₹2,000 at risk, ₹500 recovered, and 25.0% recovery rate.
 
 ---
 
 ## 🧪 Comprehensive Automated Test Suite
 
-RecoverAI features **93 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
+RecoverAI features **113 passing automated tests** across all architectural layers, verified under strict Ruff linting and type safety:
 
 ```
-tests/test_main.py                  ...      [Health check & configuration loading]
-tests/test_models.py                .        [Declarative model relationships]
-tests/test_schema_constraints.py    ......   [Database constraints & nullability]
-tests/test_webhook_ingestion.py     ........ [HMAC verification, deduplication, case creation]
-tests/test_context_builder.py       .        [Failure context & customer telemetry aggregation]
-tests/test_llm_provider.py          ..       [Gemini & Mock provider contracts]
-tests/test_safety_validator.py      ......   [Policy engine boundary & limits validation]
-tests/test_analysis_service.py      .        [End-to-end diagnostic analysis & decisions]
-tests/test_scheduler.py             ..       [Async locking & batch claim concurrency]
-tests/test_executor.py              ........ [Category B reconciliation, live/simulated executors, atomic claim, zero-transaction isolation]
-tests/test_payment_link_webhooks.py ........ [Payment link webhook reconciliation, late window payment, amount verification]
-tests/test_metrics.py               ......   [Recovery metrics, funnel counts, LIVE/SIMULATED isolation]
-tests/test_simulation.py            ................ [SHA-256 determinism, clock isolation, idempotency, heuristic model, fail-closed reconciliation, wall-clock independence, execution isolation]
+tests/test_analysis_service.py       .                                 [  0%]
+tests/test_case_detail.py            ...                               [  3%]
+tests/test_context_builder.py        .                                 [  4%]
+tests/test_customer_fallback.py       ......                            [  9%]
+tests/test_executor.py               .....................             [ 28%]
+tests/test_llm_provider.py           ..                                [ 30%]
+tests/test_main.py                   ......                            [ 35%]
+tests/test_metrics.py                .......                           [ 41%]
+tests/test_models.py                 .                                 [ 42%]
+tests/test_money_unit_context.py      .....                             [ 46%]
+tests/test_payment_link_webhooks.py  .........                         [ 54%]
+tests/test_safety_validator.py       ......                            [ 60%]
+tests/test_scheduler.py              ....                              [ 63%]
+tests/test_schema_constraints.py     ......                            [ 69%]
+tests/test_simulation.py             ................                  [ 83%]
+tests/test_webhook_ingestion.py      ...................               [100%]
 
-======================== 93 passed in 48.15s =========================
+======================= 113 passed in 26.10s ========================
 ```
 
 ### 15-Point Production Safety Verification Audit
